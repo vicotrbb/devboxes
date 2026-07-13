@@ -32,7 +32,7 @@ def test_browser_login_and_dashboard_session() -> None:
         assert dashboard.headers["x-content-type-options"] == "nosniff"
         assert "Kubernetes connected" in dashboard.text
         assert "cluster default storage" in dashboard.text
-        styles = client.get("/static/styles.css?v=0.1.0")
+        styles = client.get("/static/styles.css?v=0.1.1")
         assert "[hidden]" in styles.text
         assert "display: none !important" in styles.text
         payload = client.get("/api/v1/devboxes").json()

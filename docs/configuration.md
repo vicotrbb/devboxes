@@ -3,15 +3,17 @@
 Use a values file for durable installations:
 
 ```bash
-helm show values oci://ghcr.io/vicotrbb/charts/devboxes --version 0.1.0 > values.yaml
+helm show values oci://ghcr.io/vicotrbb/charts/devboxes --version 0.1.1 > values.yaml
 helm upgrade --install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
-  --version 0.1.0 \
+  --version 0.1.1 \
   --namespace devboxes \
   --create-namespace \
   --values values.yaml
 ```
 
 `values.schema.json` rejects unknown top-level and component fields, invalid service types, incomplete NodePort configuration, invalid ports, and out-of-range TTLs before Kubernetes resources are rendered.
+
+When `scripts/install.sh` runs from a source checkout, it uses the local chart by default. Set `DEVBOXES_CHART_SOURCE=oci` and `DEVBOXES_VERSION=X.Y.Z` to force a released OCI chart, or set `DEVBOXES_CHART_SOURCE=local` to require the checkout chart. This prevents release verification from silently falling back to local templates.
 
 ## Controller
 
