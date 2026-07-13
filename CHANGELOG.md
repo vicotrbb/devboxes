@@ -14,6 +14,10 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 - Tightened Rust and Python quality policy, regression tests, and contributor guidance.
 - Removed internal product and design specifications from the public repository after preserving durable requirements in maintained documentation.
 
+### Fixed
+
+- Updated pytest to a patched release and expanded CI auditing to cover development dependencies in the Python lockfile.
+
 ## [0.1.0] - 2026-07-12
 
 ### Added
