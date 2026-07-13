@@ -8,4 +8,4 @@ devbox login --url https://devboxes.example.com
 devbox create atlas --repo owner/project --ssh
 ```
 
-See the [project documentation](https://github.com/vicotrbb/devboxes#readme) for installation and configuration.
+See the [CLI reference](../docs/cli.md) for every command, option, environment variable, output contract, and SSH workflow. The [golden path](../docs/golden-path.md) covers the recommended installation and performance setup.

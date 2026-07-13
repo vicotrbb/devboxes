@@ -32,7 +32,7 @@ The workspace entrypoint refuses to start without `SSH_AUTHORIZED_KEYS`. It prep
 
 - Controller RBAC is a Role scoped to the release namespace; it cannot manage cluster-wide resources.
 - Workspace service accounts have no RBAC binding and do not mount Kubernetes API tokens.
-- Workspace Secrets are mounted read-only with mode `0400` and are not embedded in either image.
+- Workspace Secrets are mounted read-only with mode `0440`, scoped to the workspace group, and are not embedded in either image.
 - The controller runs as a non-root user with a read-only root filesystem and all Linux capabilities dropped.
 - The workspace runs as root during initialization, then exposes only the unprivileged `dev` SSH user. Password login and root login are disabled.
 - The trusted `dev` user has passwordless `sudo`. The pod adds only `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`, `SETUID`, and `SYS_CHROOT`; `SYS_ADMIN` and privileged mode are not used.

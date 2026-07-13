@@ -1,3 +1,5 @@
+"""Authenticate bearer clients and signed browser sessions."""
+
 import base64
 import hashlib
 import hmac
@@ -16,15 +18,20 @@ CSRF_HEADER = "X-Devboxes-CSRF"
 
 @dataclass(frozen=True)
 class AuthContext:
+    """Describe the authentication mechanism accepted for a request."""
+
     mode: str
 
 
 class Authenticator:
+    """Issue and validate controller credentials without storing server sessions."""
+
     def __init__(self, settings: Settings) -> None:
         self._token = settings.access_token.get_secret_value().encode()
         self._session_ttl = settings.session_ttl_seconds
 
     def issue_session(self) -> tuple[str, str]:
+        """Issue a signed browser session and its matching CSRF token."""
         csrf = secrets.token_urlsafe(24)
         issued_at = str(int(time.time()))
         payload = f"{issued_at}:{csrf}".encode()
@@ -32,9 +39,11 @@ class Authenticator:
         return f"{_b64(payload)}.{_b64(signature)}", csrf
 
     def validate_access_token(self, candidate: str) -> bool:
+        """Compare a candidate controller token in constant time."""
         return hmac.compare_digest(candidate.encode(), self._token)
 
     def validate_session(self, candidate: str) -> str | None:
+        """Return the CSRF value for a valid unexpired session."""
         try:
             encoded_payload, encoded_signature = candidate.split(".", maxsplit=1)
             payload = _unb64(encoded_payload)
@@ -51,6 +60,7 @@ class Authenticator:
         return csrf
 
     async def require(self, request: Request) -> AuthContext:
+        """Require bearer authentication or a valid browser session and CSRF token."""
         authorization = request.headers.get("Authorization", "")
         if authorization.startswith("Bearer "):
             candidate = authorization.removeprefix("Bearer ").strip()
@@ -80,6 +90,7 @@ class Authenticator:
         return AuthContext(mode="session")
 
     def browser_session_valid(self, request: Request) -> bool:
+        """Return whether a request carries a valid browser session."""
         session = request.cookies.get(SESSION_COOKIE)
         return bool(session and self.validate_session(session))
 

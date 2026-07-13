@@ -1,0 +1,23 @@
+{
+  "name": "devboxes-repository-tooling",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "JavaScript and documentation quality gates for Devboxes",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "format:check": "prettier --check \"controller/src/**/*.js\" \"scripts/**/*.mjs\" \"eslint.config.js\" \"package.json\" \".markdownlint-cli2.jsonc\"",
+    "lint": "npm run lint:js && npm run lint:docs && npm run format:check",
+    "lint:docs": "node scripts/check-docs.mjs && markdownlint-cli2",
+    "lint:js": "eslint eslint.config.js controller/src/devboxes_controller/static/*.js scripts/*.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.7.0",
+    "globals": "17.7.0",
+    "markdownlint-cli2": "0.23.0",
+    "prettier": "3.9.5"
+  }
+}

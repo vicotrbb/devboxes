@@ -56,7 +56,7 @@
           <h1>From an idea to a ready workspace.</h1>
           <p class="docs-lede">
             Devboxes gives you a prepared Linux machine on Kubernetes, reached from your terminal
-            over SSH. This guide teaches the workflow you will use every day—and makes the storage
+            over SSH. This guide teaches the workflow you will use every day, and makes the storage
             boundaries explicit before anything destructive happens.
           </p>
           <div class="docs-facts" aria-label="Devboxes at a glance">
@@ -169,7 +169,7 @@ devbox create atlas --preset medium --ttl {{ default_ttl_hours }} --repo owner/y
         <section class="docs-section" id="create" tabindex="-1">
           <h2>Create the right box</h2>
           <p>
-            Names use 1–40 lowercase letters, digits, and hyphens. Choose a preset for the job and
+            Names use 1 to 40 lowercase letters, digits, and hyphens. Choose a preset for the job and
             a TTL between 1 and {{ max_ttl_hours }} hours; {{ default_ttl_hours }} hours is the default.
           </p>
 
@@ -352,7 +352,7 @@ DEVBOX_TOKEN="$TOKEN_FROM_YOUR_SECRET_STORE" \
           </p>
           <ul class="docs-bullets">
             <li>The fleet refreshes automatically every eight seconds; manual refresh is also available.</li>
-            <li>State is written as text—ready, starting, stopped, or degraded—rather than conveyed by color alone.</li>
+            <li>State is written as text, ready, starting, stopped, or degraded, rather than conveyed by color alone.</li>
             <li>Deleting opens a confirmation that distinguishes retained storage from permanent purge.</li>
             <li>The same access token creates a signed browser session; the raw token is not kept in the session cookie.</li>
           </ul>
