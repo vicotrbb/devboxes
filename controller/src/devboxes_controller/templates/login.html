@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Sign in · Devboxes</title>
+    <link rel="icon" href="/static/favicon.svg?v=0.1.0" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/styles.css?v=0.1.0">
+  </head>
+  <body class="login-page">
+    <main class="login-shell">
+      <section class="login-copy" aria-labelledby="login-title">
+        <a class="wordmark" href="/" aria-label="Devboxes home">
+          <span class="wordmark-mark" aria-hidden="true">db</span>
+          <span>devboxes</span>
+        </a>
+        <div>
+          <p class="context-line">{{ cluster_name }} development workshop</p>
+          <h1 id="login-title">Ready when the idea is.</h1>
+          <p class="login-intro">
+            Create a prepared Linux workspace, connect over SSH, and return to the same tmux
+            session across disconnects while compute stays active.
+          </p>
+        </div>
+        <pre class="terminal-sample" aria-label="Example Devboxes terminal command"><code><span>$</span> devbox create atlas --repo owner/project --ssh
+<span>✓</span> workspace ready at box.example.com
+<span>↳</span> attached to tmux session main</code></pre>
+      </section>
+
+      <section class="login-panel" aria-labelledby="access-title">
+        <div>
+          <p class="context-line">Authenticated access</p>
+          <h2 id="access-title">Open the workbench</h2>
+          <p>Use the access token your cluster operator created during installation.</p>
+        </div>
+        <form action="/auth/login" method="post" class="login-form">
+          <label for="token">Access token</label>
+          <input
+            id="token"
+            name="token"
+            type="password"
+            autocomplete="current-password"
+            required
+            autofocus
+            aria-describedby="token-help{% if error %} login-error{% endif %}"
+          >
+          <p id="token-help" class="field-help">The token is exchanged for a signed, private browser session.</p>
+          {% if error %}
+          <p id="login-error" class="form-error" role="alert">{{ error }}</p>
+          {% endif %}
+          <button type="submit" class="button button-primary">Continue</button>
+        </form>
+        <p class="security-note">SameSite session · CSRF protected · Token stays server-side</p>
+      </section>
+    </main>
+  </body>
+</html>

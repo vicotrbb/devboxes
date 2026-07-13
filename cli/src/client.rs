@@ -1,0 +1,157 @@
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use reqwest::{Client, Method, StatusCode};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+
+use crate::models::{CreateDevbox, DeleteResult, Devbox, DevboxList, WhoAmI};
+
+pub struct ApiClient {
+    base_url: String,
+    token: String,
+    http: Client,
+}
+
+impl ApiClient {
+    pub fn new(base_url: String, token: String) -> Result<Self> {
+        let http = Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .user_agent(concat!("devbox-cli/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .context("failed to initialize HTTP client")?;
+        Ok(Self {
+            base_url,
+            token,
+            http,
+        })
+    }
+
+    pub async fn whoami(&self) -> Result<WhoAmI> {
+        self.request(Method::GET, "/api/v1/whoami", Option::<&()>::None)
+            .await
+    }
+
+    pub async fn list(&self) -> Result<Vec<Devbox>> {
+        Ok(self
+            .request::<(), DevboxList>(Method::GET, "/api/v1/devboxes", None)
+            .await?
+            .items)
+    }
+
+    pub async fn get(&self, name: &str) -> Result<Devbox> {
+        self.request(
+            Method::GET,
+            &format!("/api/v1/devboxes/{name}"),
+            Option::<&()>::None,
+        )
+        .await
+    }
+
+    pub async fn create(&self, payload: &CreateDevbox<'_>) -> Result<Devbox> {
+        self.request(Method::POST, "/api/v1/devboxes", Some(payload))
+            .await
+    }
+
+    pub async fn start(&self, name: &str) -> Result<Devbox> {
+        self.request(
+            Method::POST,
+            &format!("/api/v1/devboxes/{name}/start"),
+            Option::<&()>::None,
+        )
+        .await
+    }
+
+    pub async fn stop(&self, name: &str) -> Result<Devbox> {
+        self.request(
+            Method::POST,
+            &format!("/api/v1/devboxes/{name}/stop"),
+            Option::<&()>::None,
+        )
+        .await
+    }
+
+    pub async fn delete(&self, name: &str, purge: bool) -> Result<DeleteResult> {
+        self.request(
+            Method::DELETE,
+            &format!("/api/v1/devboxes/{name}?purge={purge}"),
+            Option::<&()>::None,
+        )
+        .await
+    }
+
+    async fn request<B, R>(&self, method: Method, path: &str, body: Option<&B>) -> Result<R>
+    where
+        B: Serialize + ?Sized,
+        R: DeserializeOwned,
+    {
+        let mut request = self
+            .http
+            .request(method, format!("{}{}", self.base_url, path))
+            .bearer_auth(&self.token)
+            .header("Accept", "application/json");
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request
+            .send()
+            .await
+            .context("failed to reach Devboxes API")?;
+        let status = response.status();
+        if status == StatusCode::NO_CONTENT {
+            bail!("the API returned no content where a response was expected");
+        }
+        if !status.is_success() {
+            let payload = response.json::<Value>().await.unwrap_or(Value::Null);
+            let detail = api_error_detail(&payload);
+            bail!("Devboxes API returned {status}: {detail}");
+        }
+        response
+            .json::<R>()
+            .await
+            .context("Devboxes API returned an invalid response")
+    }
+}
+
+fn api_error_detail(payload: &Value) -> String {
+    match payload.get("detail") {
+        Some(Value::String(message)) => message.clone(),
+        Some(Value::Array(errors)) => {
+            let messages = errors
+                .iter()
+                .filter_map(|error| error.get("msg").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("; ");
+            if messages.is_empty() {
+                "request failed".to_owned()
+            } else {
+                messages
+            }
+        }
+        _ => "request failed".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::api_error_detail;
+
+    #[test]
+    fn validation_errors_are_human_readable() {
+        let payload = json!({
+            "detail": [
+                {"msg": "name is invalid"},
+                {"msg": "ttl is too large"}
+            ]
+        });
+
+        assert_eq!(
+            api_error_detail(&payload),
+            "name is invalid; ttl is too large"
+        );
+    }
+}

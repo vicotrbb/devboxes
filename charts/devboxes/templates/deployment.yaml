@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "devboxes.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "devboxes.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "devboxes.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "devboxes.selectorLabels" . | nindent 8 }}
+        {{- with .Values.controller.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.controller.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "devboxes.controllerServiceAccountName" . }}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.controller.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: controller
+          image: {{ include "devboxes.controllerImage" . | quote }}
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: DEVBOXES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: DEVBOXES_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controller.existingSecret }}
+                  key: {{ .Values.controller.accessTokenKey }}
+            - name: DEVBOXES_EXTERNAL_URL
+              value: {{ .Values.controller.externalUrl | quote }}
+            - name: DEVBOXES_DISPLAY_NAME
+              value: {{ .Values.controller.displayName | quote }}
+            - name: DEVBOXES_CLUSTER_NAME
+              value: {{ .Values.controller.clusterName | quote }}
+            - name: DEVBOXES_COOKIE_SECURE
+              value: {{ .Values.controller.cookieSecure | quote }}
+            - name: DEVBOXES_DEFAULT_TTL_HOURS
+              value: {{ .Values.controller.defaultTtlHours | quote }}
+            - name: DEVBOXES_MAX_TTL_HOURS
+              value: {{ .Values.controller.maxTtlHours | quote }}
+            - name: DEVBOXES_CLEANUP_INTERVAL_SECONDS
+              value: {{ .Values.controller.cleanupIntervalSeconds | quote }}
+            - name: DEVBOXES_SESSION_TTL_SECONDS
+              value: {{ .Values.controller.sessionTtlSeconds | quote }}
+            - name: DEVBOXES_LOG_LEVEL
+              value: {{ .Values.controller.logLevel | quote }}
+            - name: DEVBOXES_WORKSPACE_IMAGE
+              value: {{ include "devboxes.workspaceImage" . | quote }}
+            - name: DEVBOXES_WORKSPACE_SECRET_NAME
+              value: {{ .Values.workspace.existingSecret | quote }}
+            - name: DEVBOXES_WORKSPACE_SERVICE_ACCOUNT_NAME
+              value: {{ include "devboxes.workspaceServiceAccountName" . | quote }}
+            - name: DEVBOXES_WORKSPACE_PRIORITY_CLASS
+              value: {{ .Values.workspace.priorityClassName | quote }}
+            - name: DEVBOXES_IMAGE_PULL_SECRET
+              value: {{ .Values.workspace.imagePullSecret | quote }}
+            - name: DEVBOXES_STORAGE_CLASS
+              value: {{ .Values.workspace.storageClass | quote }}
+            - name: DEVBOXES_WORKSPACE_SERVICE_TYPE
+              value: {{ .Values.workspace.sshService.type | quote }}
+            - name: DEVBOXES_WORKSPACE_SERVICE_HOST
+              value: {{ .Values.workspace.sshService.host | quote }}
+            - name: DEVBOXES_WORKSPACE_SERVICE_ANNOTATIONS
+              value: {{ .Values.workspace.sshService.annotations | toJson | quote }}
+            - name: DEVBOXES_WORKSPACE_LOAD_BALANCER_CLASS
+              value: {{ .Values.workspace.sshService.loadBalancerClass | quote }}
+            - name: DEVBOXES_WORKSPACE_EXTERNAL_TRAFFIC_POLICY
+              value: {{ .Values.workspace.sshService.externalTrafficPolicy | quote }}
+            - name: DEVBOXES_WORKSPACE_LOAD_BALANCER_SOURCE_RANGES
+              value: {{ .Values.workspace.sshService.loadBalancerSourceRanges | toJson | quote }}
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

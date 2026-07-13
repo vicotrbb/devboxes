@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Devboxes</title>
+    <link rel="icon" href="/static/favicon.svg?v=0.1.0" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/styles.css?v=0.1.0">
+    <script src="/static/app.js?v=0.1.0" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="app-header">
+      <div class="header-leading">
+        <a class="wordmark" href="/" aria-label="Devboxes home">
+          <span class="wordmark-mark" aria-hidden="true">db</span>
+          <span>devboxes</span>
+        </a>
+        <nav class="primary-nav" aria-label="Primary navigation">
+          <a class="nav-link" href="/" aria-current="page">Workbench</a>
+          <a class="nav-link" href="/docs">Docs</a>
+        </nav>
+      </div>
+      <div class="header-actions">
+        <span class="cluster-state"><span aria-hidden="true"></span> {{ cluster_name }} connected</span>
+        <button class="button button-quiet" id="refresh-button" type="button">Refresh</button>
+        <button class="button button-quiet" id="logout-button" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <main class="app-main" id="main-content" tabindex="-1">
+      <section class="page-intro" aria-labelledby="page-title">
+        <div>
+          <p class="context-line">Ephemeral compute · persistent workspace</p>
+          <h1 id="page-title">Development machines, on demand.</h1>
+          <p>
+            Create a prepared environment here or from the terminal. Disconnect freely—while
+            compute is running, SSH returns to the same tmux session.
+          </p>
+        </div>
+        <div class="cli-strip" aria-label="Terminal quick start">
+          <code>devbox create &lt;name&gt; --ssh</code>
+          <button class="copy-button" type="button" data-copy="devbox create my-box --ssh">
+            Copy
+          </button>
+        </div>
+      </section>
+
+      <section class="create-workbench" aria-labelledby="create-title">
+        <div class="section-heading">
+          <div>
+            <h2 id="create-title">Create a devbox</h2>
+            <p>Compute expires into a safe stopped state. Your volume is never deleted automatically.</p>
+          </div>
+          <span class="capacity-note">{{ storage_class }} storage · {{ workspace_service_type }} SSH · OCI images</span>
+        </div>
+
+        <form id="create-form" class="create-form">
+          <div class="field field-name">
+            <label for="name">Name</label>
+            <input id="name" name="name" type="text" pattern="[a-z0-9][a-z0-9-]{0,38}[a-z0-9]|[a-z0-9]" maxlength="40" placeholder="atlas" required>
+          </div>
+          <div class="field">
+            <label for="preset">Size</label>
+            <select id="preset" name="preset">
+              <option value="small">Small · 512 MiB</option>
+              <option value="medium">Medium · 2 GiB</option>
+              <option value="large">Large · 4 GiB</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="ttl-hours">Auto-stop</label>
+            <select id="ttl-hours" name="ttl_hours">
+              {% set ttl_options = [
+                (4, "4 hours"),
+                (8, "8 hours"),
+                (24, "24 hours"),
+                (72, "3 days"),
+                (168, "7 days"),
+              ] %}
+              {% for hours, label in ttl_options %}
+              {% if hours <= max_ttl_hours %}
+              <option value="{{ hours }}"{% if hours == default_ttl_hours %} selected{% endif %}>{{ label }}</option>
+              {% endif %}
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field field-repository">
+            <label for="repository">GitHub repository <span>optional</span></label>
+            <input id="repository" name="repository" type="text" placeholder="owner/repository" autocomplete="off">
+          </div>
+          <button class="button button-primary create-button" type="submit">
+            <span>Create devbox</span>
+          </button>
+        </form>
+        <p id="create-error" class="form-error" role="alert" tabindex="-1" hidden></p>
+      </section>
+
+      <section class="fleet" aria-labelledby="fleet-title">
+        <div class="section-heading fleet-heading">
+          <div>
+            <h2 id="fleet-title">Your devboxes</h2>
+            <p id="fleet-summary" aria-live="polite">Loading current state…</p>
+          </div>
+          <div class="state-legend" aria-label="Devbox state summary">
+            <span><b id="ready-count">–</b> ready</span>
+            <span><b id="stopped-count">–</b> stopped</span>
+          </div>
+        </div>
+
+        <div id="loading-state" class="loading-state" aria-label="Loading devboxes">
+          <span></span><span></span><span></span>
+        </div>
+
+        <div id="empty-state" class="empty-state" hidden>
+          <div class="empty-glyph" aria-hidden="true">$</div>
+          <div>
+            <h3>The bench is clear.</h3>
+            <p>Create your first box above, or run <code>devbox create first-box --ssh</code>.</p>
+          </div>
+        </div>
+
+        <div class="devbox-table-wrap" id="table-wrap" hidden>
+          <table class="devbox-table">
+            <thead>
+              <tr>
+                <th scope="col">Devbox</th>
+                <th scope="col">State</th>
+                <th scope="col">Workspace</th>
+                <th scope="col">Auto-stop</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="devbox-rows"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="delete-dialog" class="delete-dialog" aria-labelledby="delete-title">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="context-line">Destructive action</p>
+            <h2 id="delete-title">Delete <span id="delete-name"></span>?</h2>
+          </div>
+          <button class="icon-button" type="submit" value="cancel" aria-label="Close delete dialog">×</button>
+        </div>
+        <p>Compute and its SSH address will be removed immediately.</p>
+        <label class="purge-choice">
+          <input type="checkbox" id="purge-volume">
+          <span>
+            <strong>Also purge the home volume</strong>
+            <small>Source code, shell history, configuration, and saved logins cannot be recovered.</small>
+          </span>
+        </label>
+        <div class="dialog-actions">
+          <button class="button button-secondary" type="submit" value="cancel">Keep devbox</button>
+          <button class="button button-danger" id="confirm-delete" type="submit" value="default">Delete devbox</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>

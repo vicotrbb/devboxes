@@ -1,0 +1,20 @@
+apiVersion: v2
+name: devboxes
+description: Self-hosted, ephemeral development environments on Kubernetes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/vicotrbb/devboxes
+icon: https://raw.githubusercontent.com/vicotrbb/devboxes/main/docs/assets/devboxes-mark.svg
+sources:
+  - https://github.com/vicotrbb/devboxes
+maintainers:
+  - name: Victor Bona
+    url: https://github.com/vicotrbb
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/category: integration-delivery
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial public release

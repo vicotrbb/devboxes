@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  create-release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1
+        with:
+          changelog: CHANGELOG.md
+
+  cli:
+    name: CLI ${{ matrix.target }}
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            build-tool: cargo
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            build-tool: cross
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            build-tool: cargo
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            build-tool: cargo
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
+        with:
+          bin: devbox
+          package: devbox-cli
+          manifest-path: cli/Cargo.toml
+          target: ${{ matrix.target }}
+          build-tool: ${{ matrix.build-tool }}
+          locked: true
+          checksum: sha256
+
+  images:
+    name: ${{ matrix.component }} image
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [controller, workspace]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Resolve version
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: ${{ matrix.component }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/devboxes-${{ matrix.component }}:${{ steps.version.outputs.value }}
+            ghcr.io/${{ github.repository_owner }}/devboxes-${{ matrix.component }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.value }}
+            org.opencontainers.image.licenses=Apache-2.0
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+          provenance: mode=max
+          sbom: true
+      - name: Attest image provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/devboxes-${{ matrix.component }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v4.2.2
+      - name: Check chart version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          chart_version="$(helm show chart charts/devboxes | awk '/^version:/ {print $2}')"
+          test "$tag_version" = "$chart_version"
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - name: Package and publish chart
+        run: |
+          helm package charts/devboxes --destination /tmp
+          helm push "/tmp/devboxes-${GITHUB_REF_NAME#v}.tgz" oci://ghcr.io/${{ github.repository_owner }}/charts

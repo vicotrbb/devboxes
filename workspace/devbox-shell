@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+export HOME=/home/dev
+export USER=dev
+export LOGNAME=dev
+export SHELL=/bin/zsh
+
+# shellcheck source=/dev/null
+source /etc/profile.d/devbox-secrets.sh
+cd "$HOME/workspace"
+
+if [[ -n "${SSH_ORIGINAL_COMMAND:-}" ]]; then
+  exec /bin/zsh -lc "$SSH_ORIGINAL_COMMAND"
+fi
+
+exec tmux new-session -A -s main -c "$HOME/workspace"

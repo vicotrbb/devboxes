@@ -1,0 +1,36 @@
+Port 2222
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+HostKey /home/dev/.devbox/ssh/ssh_host_ed25519_key
+
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+AuthorizedKeysFile /home/dev/.ssh/authorized_keys
+AllowUsers dev
+UsePAM no
+StrictModes yes
+
+AllowAgentForwarding yes
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+PermitTunnel no
+PermitUserEnvironment no
+PermitUserRC no
+PrintMotd no
+
+ClientAliveInterval 60
+ClientAliveCountMax 3
+LoginGraceTime 30
+MaxAuthTries 3
+MaxSessions 10
+
+AcceptEnv LANG LC_* TERM COLORTERM
+ForceCommand /usr/local/bin/devbox-shell
+Subsystem sftp internal-sftp

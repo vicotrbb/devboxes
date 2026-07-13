@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  controller:
+    name: Controller
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+      - name: Install uv
+        run: python -m pip install uv==0.11.26
+      - name: Install dependencies
+        working-directory: controller
+        run: uv sync --frozen --extra dev
+      - name: Lint
+        working-directory: controller
+        run: uv run ruff check .
+      - name: Type check
+        working-directory: controller
+        run: uv run mypy
+      - name: Test
+        working-directory: controller
+        run: uv run pytest --cov-report=xml --cov-fail-under=70
+      - name: Dependency audit
+        working-directory: controller
+        run: |
+          uv export --quiet --frozen --no-dev --no-emit-project --format requirements-txt --output-file /tmp/devboxes-requirements.txt
+          uv run pip-audit --requirement /tmp/devboxes-requirements.txt
+
+  cli:
+    name: CLI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Test
+        run: cargo test --all-features --locked
+      - name: Dependency audit
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit
+
+  packaging:
+    name: Helm and shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v4.2.2
+      - name: Shell lint
+        run: shellcheck scripts/*.sh workspace/*.sh workspace/devbox-shell
+      - name: Release version consistency
+        run: scripts/check-version.sh
+      - name: Secret scan
+        run: |
+          go install github.com/gitleaks/gitleaks/v8@v8.30.1
+          "$(go env GOPATH)/bin/gitleaks" detect --source . --no-git --redact --no-banner
+      - name: Helm lint
+        run: helm lint charts/devboxes --strict
+      - name: Render LoadBalancer installation
+        run: helm template devboxes charts/devboxes --namespace devboxes > /tmp/devboxes.yaml
+      - name: Validate Kubernetes resources
+        run: docker run --rm -i ghcr.io/yannh/kubeconform:v0.7.0 -strict -summary -ignore-missing-schemas < /tmp/devboxes.yaml
+      - name: Render NodePort, TLS ingress, monitoring, and disruption budget
+        run: >-
+          helm template devboxes charts/devboxes --namespace devboxes
+          --set workspace.sshService.type=NodePort
+          --set workspace.sshService.host=192.0.2.10
+          --set ingress.enabled=true
+          --set ingress.className=nginx
+          --set ingress.tls.enabled=true
+          --set ingress.tls.secretName=devboxes-tls
+          --set controller.externalUrl=https://devboxes.example.com
+          --set controller.cookieSecure=true
+          --set serviceMonitor.enabled=true
+          --set podDisruptionBudget.enabled=true
+          > /tmp/devboxes-full.yaml
+      - name: Reject incomplete NodePort configuration
+        run: |
+          if helm template devboxes charts/devboxes --set workspace.sshService.type=NodePort >/dev/null 2>&1; then
+            echo "NodePort rendered without workspace.sshService.host" >&2
+            exit 1
+          fi
+
+  images:
+    name: Container images
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [controller, workspace]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Build image
+        run: docker build --tag "devboxes-${{ matrix.component }}:ci" "${{ matrix.component }}"
+
+  kind:
+    name: Clean-cluster install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v4.2.2
+      - name: Install kind
+        run: |
+          go install sigs.k8s.io/kind@v0.31.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Run full lifecycle E2E
+        run: scripts/kind-e2e.sh

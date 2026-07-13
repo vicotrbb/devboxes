@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Documentation · Devboxes</title>
+    <link rel="icon" href="/static/favicon.svg?v=0.1.0" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/styles.css?v=0.1.0">
+    <script src="/static/docs.js?v=0.1.0" defer></script>
+  </head>
+  <body class="docs-page">
+    <a class="skip-link" href="#main-content">Skip to documentation</a>
+    <header class="app-header">
+      <div class="header-leading">
+        <a class="wordmark" href="/" aria-label="Devboxes home">
+          <span class="wordmark-mark" aria-hidden="true">db</span>
+          <span>devboxes</span>
+        </a>
+        <nav class="primary-nav" aria-label="Primary navigation">
+          <a class="nav-link" href="/">Workbench</a>
+          <a class="nav-link" href="/docs" aria-current="page">Docs</a>
+        </nav>
+      </div>
+      <div class="header-actions">
+        <span class="cluster-state"><span aria-hidden="true"></span> {{ cluster_name }} connected</span>
+        <button class="button button-quiet" id="logout-button" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <main class="docs-layout" id="main-content" tabindex="-1">
+      <aside class="docs-rail">
+        <div class="docs-rail-inner">
+          <p class="docs-rail-title">Using Devboxes</p>
+          <nav class="docs-toc" aria-label="On this page">
+            <a href="#quick-start">Quick start</a>
+            <a href="#lifecycle">What persists</a>
+            <a href="#create">Create a box</a>
+            <a href="#ssh-tmux">SSH and tmux</a>
+            <a href="#accounts">Accounts and tools</a>
+            <a href="#daily-workflow">Daily workflow</a>
+            <a href="#automation">Automation</a>
+            <a href="#dashboard">Dashboard</a>
+            <a href="#commands">Command reference</a>
+            <a href="#troubleshooting">Troubleshooting</a>
+          </nav>
+          <p class="docs-rail-note">
+            Disconnecting preserves processes. Stopping preserves files.
+          </p>
+        </div>
+      </aside>
+
+      <article class="docs-article">
+        <header class="docs-hero">
+          <p class="context-line">Devboxes documentation</p>
+          <h1>From an idea to a ready workspace.</h1>
+          <p class="docs-lede">
+            Devboxes gives you a prepared Linux machine on Kubernetes, reached from your terminal
+            over SSH. This guide teaches the workflow you will use every day—and makes the storage
+            boundaries explicit before anything destructive happens.
+          </p>
+          <div class="docs-facts" aria-label="Devboxes at a glance">
+            <span>Terminal first</span>
+            <span>SSH + tmux</span>
+            <span>Persistent home</span>
+            <span>Automatic compute stop</span>
+          </div>
+        </header>
+
+        <section class="docs-section" id="quick-start" tabindex="-1">
+          <h2>Quick start</h2>
+          <p>
+            Install the CLI once, authenticate it against <code>{{ external_url }}</code>, then create a
+            medium box and enter it. The CLI waits until SSH is genuinely ready before connecting.
+          </p>
+
+          <div class="command-block">
+            <div class="command-heading">
+              <span>Install, authenticate, create, connect</span>
+              <button class="command-copy" type="button" data-copy-target="quick-start-command" aria-label="Copy quick-start commands">Copy</button>
+            </div>
+            <pre><code id="quick-start-command">curl -fsSLO https://raw.githubusercontent.com/vicotrbb/devboxes/main/scripts/install-devbox-cli.sh
+sh install-devbox-cli.sh
+devbox login --url {{ external_url }}
+devbox create atlas --preset medium --ttl {{ default_ttl_hours }} --repo owner/your-project --ssh</code></pre>
+          </div>
+
+          <ol class="docs-steps">
+            <li>
+              <strong>Enter the access token once.</strong>
+              <span>The CLI verifies it and saves it in a user-only configuration file.</span>
+            </li>
+            <li>
+              <strong>Wait for “ready.”</strong>
+              <span>Kubernetes prepares the home volume, workspace pod, SSH service, and reachable address.</span>
+            </li>
+            <li>
+              <strong>Start working in <code>~/workspace</code>.</strong>
+              <span>If you supplied <code>--repo</code>, the checkout is placed in <code>~/workspace/project</code>.</span>
+            </li>
+            <li>
+              <strong>Detach instead of closing work.</strong>
+              <span>Press <kbd>Ctrl</kbd>+<kbd>b</kbd>, then <kbd>d</kbd>. Reconnect with <code>devbox ssh atlas</code>.</span>
+            </li>
+          </ol>
+
+          <div class="docs-note">
+            <strong>Your first mental shortcut</strong>
+            <p>Closing SSH leaves tmux and your processes running. Stopping the devbox ends processes but keeps everything already written under <code>/home/dev</code>.</p>
+          </div>
+        </section>
+
+        <section class="docs-section" id="lifecycle" tabindex="-1">
+          <h2>Know exactly what persists</h2>
+          <p>
+            A devbox has two lifetimes: disposable compute and a persistent {{ storage_class }} home volume.
+            The following table is the source of truth for every lifecycle action.
+          </p>
+
+          <div class="docs-table-wrap" tabindex="0" aria-label="Devbox persistence table; scroll horizontally if needed">
+            <table class="docs-table lifecycle-table">
+              <thead>
+                <tr>
+                  <th scope="col">Action</th>
+                  <th scope="col">Compute</th>
+                  <th scope="col">tmux and processes</th>
+                  <th scope="col"><code>/home/dev</code></th>
+                  <th scope="col">How to return</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Disconnect SSH</th>
+                  <td>Running</td>
+                  <td>Keep running</td>
+                  <td>Preserved</td>
+                  <td><code>devbox ssh &lt;name&gt;</code></td>
+                </tr>
+                <tr>
+                  <th scope="row">Stop or expire</th>
+                  <td>Scaled to zero</td>
+                  <td>End</td>
+                  <td>Preserved</td>
+                  <td><code>devbox start &lt;name&gt;</code></td>
+                </tr>
+                <tr>
+                  <th scope="row">Delete</th>
+                  <td>Removed</td>
+                  <td>End</td>
+                  <td>Retained</td>
+                  <td>Recreate the same name</td>
+                </tr>
+                <tr class="danger-row">
+                  <th scope="row">Delete with <code>--purge</code></th>
+                  <td>Removed</td>
+                  <td>End</td>
+                  <td>Permanently deleted</td>
+                  <td>Start from an empty box</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="docs-caption">
+            Auto-stop behaves exactly like a manual stop. It never deletes a volume.
+          </p>
+        </section>
+
+        <section class="docs-section" id="create" tabindex="-1">
+          <h2>Create the right box</h2>
+          <p>
+            Names use 1–40 lowercase letters, digits, and hyphens. Choose a preset for the job and
+            a TTL between 1 and {{ max_ttl_hours }} hours; {{ default_ttl_hours }} hours is the default.
+          </p>
+
+          <div class="command-block">
+            <div class="command-heading">
+              <span>Useful creation patterns</span>
+              <button class="command-copy" type="button" data-copy-target="create-command" aria-label="Copy creation examples">Copy</button>
+            </div>
+            <pre><code id="create-command"># Empty box, connect when ready
+devbox create scratch --ssh
+
+# Clone a GitHub repository and use a larger workspace
+devbox create compiler --preset large --ttl 72 --repo owner/compiler --ssh
+
+# Provision asynchronously for later
+devbox create nightly --preset small --no-wait</code></pre>
+          </div>
+
+          <div class="docs-table-wrap" tabindex="0" aria-label="Resource preset table; scroll horizontally if needed">
+            <table class="docs-table">
+              <thead>
+                <tr>
+                  <th scope="col">Preset</th>
+                  <th scope="col">CPU request</th>
+                  <th scope="col">Memory request</th>
+                  <th scope="col">Memory limit</th>
+                  <th scope="col">Home volume</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for preset in presets %}
+                <tr>
+                  <th scope="row">{{ preset.name }}</th>
+                  <td>{{ preset.cpu }}</td>
+                  <td>{{ preset.memory }}</td>
+                  <td>{{ preset.memory_limit }}</td>
+                  <td>{{ preset.storage }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <ul class="docs-bullets">
+            <li><strong>small</strong> is comfortable for scripts, reviews, and lightweight services.</li>
+            <li><strong>medium</strong> is the everyday default for compilers, agents, and local app stacks.</li>
+            <li><strong>large</strong> is for memory-heavy builds, databases, or parallel tooling.</li>
+            <li>Reusing a retained volume can expand it for a larger preset; volumes are never shrunk.</li>
+          </ul>
+        </section>
+
+        <section class="docs-section" id="ssh-tmux" tabindex="-1">
+          <h2>Work through SSH and tmux</h2>
+          <p>
+            <code>devbox ssh</code> verifies the box is running, uses its current {{ workspace_service_type }} address,
+            checks a stable host-key alias, and attaches you to tmux session <code>main</code>.
+          </p>
+
+          <div class="docs-keymap" aria-label="Useful tmux shortcuts">
+            <div><span><kbd>Ctrl</kbd>+<kbd>b</kbd>, <kbd>d</kbd></span><strong>Detach safely</strong></div>
+            <div><span><kbd>Ctrl</kbd>+<kbd>b</kbd>, <kbd>c</kbd></span><strong>Create a window</strong></div>
+            <div><span><kbd>Ctrl</kbd>+<kbd>b</kbd>, <kbd>n</kbd></span><strong>Next window</strong></div>
+            <div><span><kbd>Ctrl</kbd>+<kbd>b</kbd>, <kbd>[</kbd></span><strong>Scroll and copy</strong></div>
+          </div>
+
+          <h3>Open a service running inside the box</h3>
+          <p>
+            Pass normal OpenSSH options after <code>--</code>. This forwards your local port 3000
+            to port 3000 inside the devbox while keeping the tmux session attached.
+          </p>
+          <div class="command-block">
+            <div class="command-heading">
+              <span>Forward a development server</span>
+              <button class="command-copy" type="button" data-copy-target="forward-command" aria-label="Copy port-forwarding command">Copy</button>
+            </div>
+            <pre><code id="forward-command">devbox ssh atlas -- -L 3000:127.0.0.1:3000</code></pre>
+          </div>
+          <p>Then open <code>http://127.0.0.1:3000</code> locally. Agent forwarding is also available with <code>-- -A</code>; use it only when the remote workflow needs your local agent.</p>
+        </section>
+
+        <section class="docs-section" id="accounts" tabindex="-1">
+          <h2>GitHub, Codex, Claude, and installed tools</h2>
+          <p>
+            Workspace credentials arrive from a Kubernetes Secret at runtime. They are never baked
+            into the image. GitHub tokens are loaded into the shell; Codex and Claude account files
+            are seeded only when a persistent home does not already have newer login state. Every
+            credential except the SSH public key is optional.
+          </p>
+
+          <div class="command-block">
+            <div class="command-heading">
+              <span>Confirm the prepared accounts</span>
+              <button class="command-copy" type="button" data-copy-target="account-command" aria-label="Copy account verification commands">Copy</button>
+            </div>
+            <pre><code id="account-command">gh auth status
+git config --global --get-regexp '^user\.'
+codex --version
+claude --version</code></pre>
+          </div>
+
+          <dl class="docs-definitions">
+            <div>
+              <dt>GitHub</dt>
+              <dd>Public repositories clone without a token. Add <code>GH_TOKEN</code>, author name, and author email to enable private clones and pushes.</dd>
+            </div>
+            <div>
+              <dt>Codex</dt>
+              <dd>Saved account state lives under <code>~/.codex</code>. If it expires, run <code>codex login --device-auth</code> inside the box.</dd>
+            </div>
+            <div>
+              <dt>Claude Code</dt>
+              <dd>Saved account state lives under <code>~/.claude</code>. Run <code>claude</code> and follow its sign-in prompt if a refresh is required.</dd>
+            </div>
+            <div>
+              <dt>User-installed tools</dt>
+              <dd>Cargo binaries, npm globals, and <code>uv tool</code> installations land in the persistent home and survive restart.</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="docs-section" id="daily-workflow" tabindex="-1">
+          <h2>The daily workflow</h2>
+          <div class="command-block">
+            <div class="command-heading">
+              <span>Inspect and control boxes</span>
+              <button class="command-copy" type="button" data-copy-target="daily-command" aria-label="Copy daily workflow commands">Copy</button>
+            </div>
+            <pre><code id="daily-command">devbox list
+devbox status atlas
+devbox ssh atlas
+devbox stop atlas
+devbox start atlas
+devbox delete atlas
+devbox delete atlas --purge</code></pre>
+          </div>
+
+          <div class="docs-note docs-note-warning">
+            <strong>Use the least destructive action</strong>
+            <p><code>stop</code> is for freeing compute. Plain <code>delete</code> removes the box but retains its home for reuse. Add <code>--purge</code> only when the files, history, configuration, host identity, and saved logins should disappear permanently.</p>
+          </div>
+
+          <p>
+            Starting a stopped box renews its original TTL from the new start time. Deleting without
+            purge removes the SSH address; recreating the same name adopts the retained home volume.
+          </p>
+        </section>
+
+        <section class="docs-section" id="automation" tabindex="-1">
+          <h2>Use Devboxes from scripts</h2>
+          <p>
+            <code>create</code>, <code>list</code>, <code>status</code>, <code>start</code>, and
+            <code>stop</code> support global <code>--json</code>. Use <code>DEVBOX_TOKEN</code> for
+            non-interactive authentication so a token never appears in command history.
+          </p>
+
+          <div class="command-block">
+            <div class="command-heading">
+              <span>Find every ready box</span>
+              <button class="command-copy" type="button" data-copy-target="automation-command" aria-label="Copy automation example">Copy</button>
+            </div>
+            <pre><code id="automation-command">DEVBOX_URL="{{ external_url }}" \
+DEVBOX_TOKEN="$TOKEN_FROM_YOUR_SECRET_STORE" \
+  devbox --json list | jq -r '.[] | select(.state == "ready") | .name'</code></pre>
+          </div>
+
+          <dl class="docs-definitions compact">
+            <div><dt><code>DEVBOX_TOKEN</code></dt><dd>Overrides the saved access token.</dd></div>
+            <div><dt><code>DEVBOX_URL</code></dt><dd>Overrides the saved API URL.</dd></div>
+            <div><dt><code>DEVBOX_CONFIG</code></dt><dd>Uses a separate config file for an isolated profile or test.</dd></div>
+            <div><dt><code>--url</code> / <code>--token</code></dt><dd>Highest-precedence one-command overrides; prefer the token environment variable for secrecy.</dd></div>
+          </dl>
+        </section>
+
+        <section class="docs-section" id="dashboard" tabindex="-1">
+          <h2>Use the browser workbench</h2>
+          <p>
+            The dashboard and CLI operate on the same Kubernetes resources. Use the browser for a
+            quick fleet view, creation, lifecycle recovery, and copying an SSH coordinate; use the
+            terminal when you are ready to work.
+          </p>
+          <ul class="docs-bullets">
+            <li>The fleet refreshes automatically every eight seconds; manual refresh is also available.</li>
+            <li>State is written as text—ready, starting, stopped, or degraded—rather than conveyed by color alone.</li>
+            <li>Deleting opens a confirmation that distinguishes retained storage from permanent purge.</li>
+            <li>The same access token creates a signed browser session; the raw token is not kept in the session cookie.</li>
+          </ul>
+          <a class="button button-primary docs-workbench-link" href="/">Open the workbench</a>
+        </section>
+
+        <section class="docs-section" id="commands" tabindex="-1">
+          <h2>Command reference</h2>
+          <div class="docs-table-wrap" tabindex="0" aria-label="CLI command reference; scroll horizontally if needed">
+            <table class="docs-table command-table">
+              <thead>
+                <tr>
+                  <th scope="col">Command</th>
+                  <th scope="col">What it does</th>
+                  <th scope="col">Useful options</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row"><code>devbox login</code></th><td>Verifies and saves API access.</td><td><code>--url</code>, <code>--token</code></td></tr>
+                <tr><th scope="row"><code>devbox create NAME</code></th><td>Creates a prepared box and waits for readiness.</td><td><code>--preset</code>, <code>--ttl</code>, <code>--repo</code>, <code>--ssh</code>, <code>--no-wait</code></td></tr>
+                <tr><th scope="row"><code>devbox list</code></th><td>Lists every active or stopped box.</td><td><code>--json</code></td></tr>
+                <tr><th scope="row"><code>devbox status NAME</code></th><td>Shows one box, its expiry, storage, and SSH state.</td><td><code>--json</code></td></tr>
+                <tr><th scope="row"><code>devbox ssh NAME</code></th><td>Connects and attaches to tmux session <code>main</code>.</td><td><code>-- &lt;ssh options&gt;</code></td></tr>
+                <tr><th scope="row"><code>devbox start NAME</code></th><td>Restarts compute and renews the TTL.</td><td><code>--json</code></td></tr>
+                <tr><th scope="row"><code>devbox stop NAME</code></th><td>Frees compute while retaining the home volume.</td><td><code>--json</code></td></tr>
+                <tr><th scope="row"><code>devbox delete NAME</code></th><td>Removes compute and its SSH service.</td><td><code>--purge</code>, <code>--yes</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="docs-section" id="troubleshooting" tabindex="-1">
+          <h2>Troubleshooting</h2>
+
+          <details class="docs-disclosure">
+            <summary>The CLI says authentication is required</summary>
+            <p>Run <code>devbox login --url {{ external_url }}</code> and enter the access token created during installation. For a script, confirm <code>DEVBOX_TOKEN</code> is present and non-empty.</p>
+          </details>
+          <details class="docs-disclosure">
+            <summary>The TLS certificate is not trusted</summary>
+            <p>Install the issuing certificate authority on the client machine or configure a publicly trusted certificate. The CLI deliberately has no insecure TLS switch; certificate failures should be fixed at the trust store.</p>
+          </details>
+          <details class="docs-disclosure">
+            <summary>A box stays in “starting”</summary>
+            <p>Allow the first image pull and workspace initialization a few minutes. If it remains pending, inspect the dashboard message, SSH service address availability, and pod events.</p>
+          </details>
+          <details class="docs-disclosure">
+            <summary>The repository did not clone</summary>
+            <p>Connect to the empty box, run <code>gh auth status</code>, then retry with <code>gh repo clone OWNER/REPOSITORY ~/workspace/project</code>. Confirm the shared GitHub token can read the repository.</p>
+          </details>
+          <details class="docs-disclosure">
+            <summary>SSH reports a changed host key after an intentional purge</summary>
+            <p>A purged home creates a new host identity. Copy the install-scoped alias from the SSH warning, remove only that entry with <code>ssh-keygen -R ALIAS</code>, then reconnect and verify the new key.</p>
+          </details>
+          <details class="docs-disclosure">
+            <summary>Codex or Claude asks you to sign in again</summary>
+            <p>For Codex, run <code>codex login --device-auth</code>. For Claude Code, run <code>claude</code> and follow the sign-in flow. The refreshed state is written to the persistent home.</p>
+          </details>
+
+          <h3>Operator recovery</h3>
+          <p>If the problem is below the CLI, inspect the Helm release, controller, generated box, and recent events.</p>
+          <div class="command-block">
+            <div class="command-heading">
+              <span>Cluster diagnostics</span>
+              <button class="command-copy" type="button" data-copy-target="operator-command" aria-label="Copy cluster diagnostic commands">Copy</button>
+            </div>
+            <pre><code id="operator-command">helm status devboxes -n {{ namespace }}
+kubectl get deployment,service,pvc -n {{ namespace }}
+kubectl logs -n {{ namespace }} deployment/devboxes --tail=100
+kubectl get events -n {{ namespace }} --sort-by=.lastTimestamp</code></pre>
+          </div>
+        </section>
+
+        <section class="docs-finish" aria-labelledby="docs-finish-title">
+          <div>
+            <h2 id="docs-finish-title">The shortest useful loop</h2>
+            <p>Create, connect, detach, reconnect. Stop only when you want the compute back.</p>
+          </div>
+          <a class="button button-primary" href="/">Create a devbox</a>
+        </section>
+      </article>
+    </main>
+
+    <div class="visually-hidden" id="docs-status" role="status" aria-live="polite"></div>
+  </body>
+</html>

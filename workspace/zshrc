@@ -1,0 +1,19 @@
+# Devbox interactive shell
+source /etc/profile.d/devbox-secrets.sh
+export EDITOR=vim
+export VISUAL=vim
+alias ll='ls -alF'
+alias fd='fdfind'
+
+autoload -Uz compinit && compinit -C
+setopt AUTO_CD HIST_IGNORE_DUPS SHARE_HISTORY PROMPT_SUBST
+HISTFILE="$HOME/.zsh_history"
+HISTSIZE=10000
+SAVEHIST=10000
+
+PROMPT='%F{39}%n@${DEVBOX_NAME:-devbox}%f %F{245}%~%f %# '
+
+if [[ -z "${DEVBOX_WELCOME_SHOWN:-}" ]]; then
+  export DEVBOX_WELCOME_SHOWN=1
+  printf '\n  devbox: %s  ·  tmux: main  ·  workspace: ~/workspace\n\n' "${DEVBOX_NAME:-unknown}"
+fi

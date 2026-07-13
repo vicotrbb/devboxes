@@ -1,0 +1,143 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "nameOverride": {"type": "string"},
+    "fullnameOverride": {"type": "string"},
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "existingSecret", "accessTokenKey", "externalUrl"],
+      "properties": {
+        "replicaCount": {"type": "integer", "minimum": 1},
+        "image": {"$ref": "#/definitions/image"},
+        "imagePullSecrets": {"type": "array", "items": {"type": "object"}},
+        "existingSecret": {"type": "string", "minLength": 1},
+        "accessTokenKey": {"type": "string", "minLength": 1},
+        "externalUrl": {"type": "string", "format": "uri", "pattern": "^https?://"},
+        "displayName": {"type": "string", "minLength": 1},
+        "clusterName": {"type": "string", "minLength": 1},
+        "cookieSecure": {"type": "boolean"},
+        "defaultTtlHours": {"type": "integer", "minimum": 1, "maximum": 168},
+        "maxTtlHours": {"type": "integer", "minimum": 1, "maximum": 168},
+        "cleanupIntervalSeconds": {"type": "integer", "minimum": 1},
+        "sessionTtlSeconds": {"type": "integer", "minimum": 60},
+        "logLevel": {"type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]},
+        "resources": {"type": "object"},
+        "podAnnotations": {"type": "object", "additionalProperties": {"type": "string"}},
+        "podLabels": {"type": "object", "additionalProperties": {"type": "string"}},
+        "nodeSelector": {"type": "object"},
+        "tolerations": {"type": "array"},
+        "affinity": {"type": "object"}
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "existingSecret", "serviceAccount", "sshService"],
+      "properties": {
+        "image": {"$ref": "#/definitions/imageWithoutPullPolicy"},
+        "existingSecret": {"type": "string", "minLength": 1},
+        "imagePullSecret": {"type": "string"},
+        "storageClass": {"type": "string"},
+        "priorityClassName": {"type": "string"},
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "create": {"type": "boolean"},
+            "name": {"type": "string"},
+            "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
+          }
+        },
+        "sshService": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "host"],
+          "properties": {
+            "type": {"type": "string", "enum": ["LoadBalancer", "NodePort"]},
+            "host": {"type": "string"},
+            "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+            "loadBalancerClass": {"type": "string"},
+            "externalTrafficPolicy": {"type": "string", "enum": ["Cluster", "Local"]},
+            "loadBalancerSourceRanges": {"type": "array", "items": {"type": "string"}}
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"type": {"const": "NodePort"}}},
+              "then": {"properties": {"host": {"minLength": 1}}}
+            }
+          ]
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {"type": "string", "enum": ["ClusterIP", "LoadBalancer", "NodePort"]},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "className": {"type": "string"},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+        "host": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "pathType": {"type": "string", "enum": ["Exact", "Prefix", "ImplementationSpecific"]},
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "secretName": {"type": "string"}
+          }
+        }
+      }
+    },
+    "serviceMonitor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "interval": {"type": "string"},
+        "labels": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "minAvailable": {"type": ["integer", "string"]}
+      }
+    }
+  },
+  "definitions": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imageWithoutPullPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string"}
+      }
+    }
+  }
+}

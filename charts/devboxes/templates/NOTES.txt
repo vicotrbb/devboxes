@@ -1,0 +1,28 @@
+Devboxes is installed in namespace {{ .Release.Namespace }}.
+
+1. Ensure these Secrets exist:
+
+   kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.controller.existingSecret }} \
+     --from-literal={{ .Values.controller.accessTokenKey }}='<strong-random-token>'
+
+   kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.workspace.existingSecret }} \
+     --from-file=SSH_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub"
+
+2. Wait for the controller:
+
+   kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "devboxes.fullname" . }}
+
+{{- if .Values.ingress.enabled }}
+3. Open {{ .Values.controller.externalUrl }} and sign in with the controller token.
+{{- else }}
+3. Start a local connection:
+
+   kubectl -n {{ .Release.Namespace }} port-forward service/{{ include "devboxes.fullname" . }} 8000:{{ .Values.service.port }}
+
+   Then open http://127.0.0.1:8000 or run:
+   devbox login --url http://127.0.0.1:8000
+{{- end }}
+
+Important: every workspace needs an externally reachable SSH service. Configure
+workspace.sshService for your cluster's LoadBalancer implementation or use
+NodePort with workspace.sshService.host.

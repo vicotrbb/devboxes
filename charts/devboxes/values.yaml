@@ -1,0 +1,77 @@
+nameOverride: ""
+fullnameOverride: ""
+
+controller:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/vicotrbb/devboxes-controller
+    tag: ""
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  existingSecret: devboxes-auth
+  accessTokenKey: access-token
+  externalUrl: http://127.0.0.1:8000
+  displayName: operator
+  clusterName: Kubernetes
+  cookieSecure: false
+  defaultTtlHours: 24
+  maxTtlHours: 168
+  cleanupIntervalSeconds: 60
+  sessionTtlSeconds: 43200
+  logLevel: INFO
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+workspace:
+  image:
+    repository: ghcr.io/vicotrbb/devboxes-workspace
+    tag: ""
+  existingSecret: devboxes-workspace
+  imagePullSecret: ""
+  storageClass: ""
+  priorityClassName: ""
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  sshService:
+    type: LoadBalancer
+    host: ""
+    annotations: {}
+    loadBalancerClass: ""
+    externalTrafficPolicy: Cluster
+    loadBalancerSourceRanges: []
+
+service:
+  type: ClusterIP
+  port: 8000
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: devboxes.example.com
+  path: /
+  pathType: Prefix
+  tls:
+    enabled: false
+    secretName: ""
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1

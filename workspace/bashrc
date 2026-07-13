@@ -1,0 +1,18 @@
+# shellcheck shell=bash
+# Devbox interactive shell
+case "$-" in
+  *i*) ;;
+  *) return ;;
+esac
+
+# shellcheck source=/etc/profile.d/devbox-secrets.sh
+source /etc/profile.d/devbox-secrets.sh
+export EDITOR=vim
+export VISUAL=vim
+alias ll='ls -alF'
+alias fd='fdfind'
+
+if [[ -z "${DEVBOX_WELCOME_SHOWN:-}" ]]; then
+  export DEVBOX_WELCOME_SHOWN=1
+  printf '\n  devbox: %s  ·  tmux: main  ·  workspace: ~/workspace\n\n' "${DEVBOX_NAME:-unknown}"
+fi

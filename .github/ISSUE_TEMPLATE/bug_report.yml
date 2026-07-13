@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a reproducible Devboxes defect
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include tokens, credential files, private repository names, or unredacted public addresses. Report security issues through a private advisory.
+  - type: input
+    id: version
+    attributes:
+      label: Devboxes version
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: input
+    id: kubernetes
+    attributes:
+      label: Kubernetes distribution and version
+      placeholder: k3s v1.35.2+k3s1
+    validations:
+      required: true
+  - type: dropdown
+    id: ssh
+    attributes:
+      label: Workspace SSH service
+      options: [LoadBalancer, NodePort, Not applicable]
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: I removed credentials and sensitive addresses.
+          required: true

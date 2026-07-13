@@ -1,0 +1,30 @@
+[package]
+name = "devbox-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Terminal client for self-hosted Kubernetes development environments"
+license = "Apache-2.0"
+repository = "https://github.com/vicotrbb/devboxes"
+homepage = "https://github.com/vicotrbb/devboxes"
+readme = "README.md"
+keywords = ["kubernetes", "development", "ssh", "tmux", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "devbox"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "time"] }
+toml = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
