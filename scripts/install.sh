@@ -3,8 +3,9 @@ set -eu
 
 release="${DEVBOXES_RELEASE:-devboxes}"
 namespace="${DEVBOXES_NAMESPACE:-devboxes}"
-version="${DEVBOXES_VERSION:-0.1.0}"
+version="${DEVBOXES_VERSION:-0.1.1}"
 repository="${DEVBOXES_CHART_REPOSITORY:-oci://ghcr.io/vicotrbb/charts/devboxes}"
+chart_source="${DEVBOXES_CHART_SOURCE:-auto}"
 controller_secret="${DEVBOXES_CONTROLLER_SECRET:-devboxes-auth}"
 workspace_secret="${DEVBOXES_WORKSPACE_SECRET:-devboxes-workspace}"
 
@@ -19,10 +20,27 @@ script_directory="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 project_directory="$(dirname "$script_directory")"
 chart="$repository"
 version_arguments="--version $version"
-if [ -f "$project_directory/charts/devboxes/Chart.yaml" ]; then
-  chart="$project_directory/charts/devboxes"
-  version_arguments=""
-fi
+case "$chart_source" in
+  auto)
+    if [ -f "$project_directory/charts/devboxes/Chart.yaml" ]; then
+      chart="$project_directory/charts/devboxes"
+      version_arguments=""
+    fi
+    ;;
+  local)
+    chart="$project_directory/charts/devboxes"
+    version_arguments=""
+    if [ ! -f "$chart/Chart.yaml" ]; then
+      printf 'error: local chart not found at %s\n' "$chart" >&2
+      exit 1
+    fi
+    ;;
+  oci) ;;
+  *)
+    printf 'error: DEVBOXES_CHART_SOURCE must be auto, local, or oci\n' >&2
+    exit 1
+    ;;
+esac
 
 kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 if [ "${DEVBOXES_BOOTSTRAP_SECRETS:-0}" = 1 ] \

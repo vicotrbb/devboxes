@@ -38,7 +38,7 @@ kubectl create namespace devboxes
 # Create devboxes-auth and devboxes-workspace here, as described below.
 
 helm upgrade --install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
-  --version 0.1.0 \
+  --version 0.1.1 \
   --namespace devboxes \
   --values values.yaml
 ```

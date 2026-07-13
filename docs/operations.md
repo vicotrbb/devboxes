@@ -115,3 +115,9 @@ Back up required PVCs, delete boxes through the CLI, and use `--purge` only for 
 Recreate the namespace, controller Secret, workspace Secret, and Helm release from versioned values. Restore home PVCs with their expected `devbox-NAME-home` names before recreating corresponding boxes. Reusing the name reconnects compute to the retained home and its SSH host identity.
 
 If the original controller token is unavailable, issue a new token and authenticate clients again. Kubernetes resources and PVC contents do not depend on browser or CLI sessions.
+
+## Repository protection recovery
+
+The public repository has no standing ruleset bypass. Normal recovery uses a short-lived branch, a pull request, and the complete required check set. Before changing protection, capture the active rulesets and their identifiers with `gh api repos/vicotrbb/devboxes/rulesets` so the original state is auditable.
+
+If GitHub Actions or the pull request service is unavailable and a critical security or release-integrity fix cannot wait, the repository owner may temporarily disable only the `devboxes-main` ruleset in **Settings → Rules → Rulesets**. Keep the release-tag ruleset active, make the smallest reviewed and signed recovery change, then immediately reactivate the unchanged main ruleset. Verify its `active` enforcement and full rule list through the API, run the omitted checks as soon as the service recovers, and record the incident, commit, reason, operator, timestamps, and validation in the relevant security advisory or issue. Never add a permanent administrator or organization-wide bypass for this procedure.

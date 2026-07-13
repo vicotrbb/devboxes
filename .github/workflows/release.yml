@@ -9,8 +9,22 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    name: Release metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check tag and synchronized versions
+        run: |
+          scripts/check-version.sh
+          version="${GITHUB_REF_NAME#v}"
+          chart_version="$(awk '/^version:/ {print $2; exit}' charts/devboxes/Chart.yaml)"
+          test "$version" = "$chart_version"
+          grep -Fq "## [$version]" CHANGELOG.md
+
   create-release:
     name: Create GitHub release
+    needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -56,6 +70,7 @@ jobs:
 
   images:
     name: ${{ matrix.component }} image
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -106,6 +121,7 @@ jobs:
 
   helm:
     name: Helm chart
+    needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -126,3 +142,95 @@ jobs:
         run: |
           helm package charts/devboxes --destination /tmp
           helm push "/tmp/devboxes-${GITHUB_REF_NAME#v}.tgz" oci://ghcr.io/${{ github.repository_owner }}/charts
+
+  published-images:
+    name: Published images
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Verify anonymous pulls, platforms, SBOMs, and provenance
+        env:
+          DEVBOXES_VERSION: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DEVBOXES_VERSION="${DEVBOXES_VERSION#v}" scripts/verify-published-images.sh
+
+  published-chart:
+    name: Published chart (Helm ${{ matrix.major }})
+    needs: helm
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - major: 3
+            version: v3.21.3
+          - major: 4
+            version: v4.2.2
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ matrix.version }}
+      - name: Pull and render the public OCI chart
+        env:
+          DEVBOXES_VERSION: ${{ github.ref_name }}
+        run: |
+          version="${DEVBOXES_VERSION#v}"
+          helm pull oci://ghcr.io/${{ github.repository_owner }}/charts/devboxes \
+            --version "$version" \
+            --destination /tmp
+          helm template devboxes "/tmp/devboxes-$version.tgz" \
+            --namespace devboxes \
+            --set workspace.sshService.type=NodePort \
+            --set workspace.sshService.host=192.0.2.10 \
+            --set ingress.enabled=true \
+            --set ingress.className=nginx \
+            --set ingress.tls.enabled=true \
+            --set ingress.tls.secretName=devboxes-tls \
+            --set controller.externalUrl=https://devboxes.example.com \
+            --set controller.cookieSecure=true \
+            --set podDisruptionBudget.enabled=true \
+            > /tmp/devboxes-published.yaml
+          grep -Fq "ghcr.io/${{ github.repository_owner }}/devboxes-controller:$version" /tmp/devboxes-published.yaml
+          grep -Fq "ghcr.io/${{ github.repository_owner }}/devboxes-workspace:$version" /tmp/devboxes-published.yaml
+      - name: Strictly validate published Kubernetes resources
+        run: >-
+          docker run --rm -i ghcr.io/yannh/kubeconform:v0.7.0
+          -strict -summary
+          < /tmp/devboxes-published.yaml
+
+  published-e2e:
+    name: Published clean-cluster lifecycle
+    needs: [cli, published-images, published-chart]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.2
+      - name: Install kind
+        run: |
+          go install sigs.k8s.io/kind@v0.31.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Run lifecycle through released CLI, chart, and images
+        env:
+          DEVBOXES_VERSION: ${{ github.ref_name }}
+        run: |
+          DEVBOXES_VERSION="${DEVBOXES_VERSION#v}" scripts/published-e2e.sh
+
+  release-gate:
+    name: Release gate
+    needs: published-e2e
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Published release artifacts passed every release gate."

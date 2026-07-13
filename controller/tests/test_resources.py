@@ -33,6 +33,7 @@ def test_deployment_is_hardened_and_ready_for_tmux_workspace() -> None:
     assert pod["automountServiceAccountToken"] is False
     assert pod["securityContext"]["fsGroup"] == 1000
     assert pod["securityContext"]["fsGroupChangePolicy"] == "OnRootMismatch"
+    assert deployment["spec"]["progressDeadlineSeconds"] == 1800
     assert deployment["spec"]["strategy"]["type"] == "Recreate"
     assert deployment["metadata"]["annotations"][ANNOTATION_TTL_HOURS] == "24"
     assert container["resources"]["limits"] == {"memory": "8Gi"}

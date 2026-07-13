@@ -213,6 +213,10 @@ def build_deployment(
         },
         "spec": {
             "replicas": 1,
+            # The prepared workspace image is intentionally comprehensive and
+            # can take longer than Kubernetes' ten-minute default to pull on a
+            # cold node or slower registry path.
+            "progressDeadlineSeconds": 1800,
             "strategy": {"type": "Recreate"},
             "selector": {"matchLabels": {LABEL_NAME: request.name}},
             "template": {

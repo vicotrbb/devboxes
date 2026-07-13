@@ -87,8 +87,10 @@ helm template devboxes charts/devboxes --namespace devboxes
 kind create cluster --name devboxes
 ```
 
-The CI Kind job builds the controller image, loads it into a clean cluster, creates placeholder Secrets, installs the chart, waits for rollout, and exercises both the health and authenticated API endpoints.
+The CI Kind job builds both images, loads them into a clean cluster, creates placeholder Secrets, installs the local chart, waits for rollout, and exercises the authenticated API, SSH, stop, retention, recreation, host identity, and purge lifecycle.
 
 ## Release contract
 
-The CLI crate version, controller project version, chart `version`, and chart `appVersion` must match the release tag without the leading `v`. A `vX.Y.Z` tag creates a GitHub Release, publishes checksummed CLI archives, pushes multi-architecture images, attests image provenance, and publishes the chart to GHCR.
+The CLI manifest and lockfile, controller package and lockfile, chart `version` and `appVersion`, repository package metadata, installer default, public examples, and static asset cache keys must match. `scripts/check-version.sh` enforces that contract and verifies the current changelog section and comparison link.
+
+A `vX.Y.Z` tag on an already-green `main` commit creates a GitHub Release, publishes four checksummed CLI archives, pushes multi-architecture images with SPDX SBOM and SLSA provenance attestations, and publishes the chart to GHCR. The workflow then verifies anonymous image pulls, both Linux architectures, signed provenance, public chart rendering under Helm 3 and Helm 4, strict Kubernetes schemas, the public checksum installer, and the complete clean-cluster lifecycle using only released chart and image artifacts. Run the same final lifecycle manually with `DEVBOXES_VERSION=X.Y.Z scripts/published-e2e.sh`.
