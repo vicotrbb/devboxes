@@ -3,9 +3,9 @@
 Use a values file for durable installations:
 
 ```bash
-helm show values oci://ghcr.io/vicotrbb/charts/devboxes --version 0.1.1 > values.yaml
+helm show values oci://ghcr.io/vicotrbb/charts/devboxes --version 0.1.2 > values.yaml
 helm upgrade --install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
-  --version 0.1.1 \
+  --version 0.1.2 \
   --namespace devboxes \
   --create-namespace \
   --values values.yaml
