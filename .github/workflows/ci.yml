@@ -74,7 +74,7 @@ jobs:
         run: scripts/check-version.sh
       - name: Secret scan
         run: |
-          go install github.com/gitleaks/gitleaks/v8@v8.30.1
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
           "$(go env GOPATH)/bin/gitleaks" detect --source . --no-git --redact --no-banner
       - name: Helm lint
         run: helm lint charts/devboxes --strict
