@@ -43,6 +43,32 @@ def test_browser_login_and_dashboard_session() -> None:
         ]
 
 
+def test_system_endpoints_report_health_readiness_and_metrics() -> None:
+    with app_client() as client:
+        assert client.get("/health").json() == {"status": "ok"}
+        assert client.get("/ready").json() == {"status": "ready"}
+        metrics = client.get("/metrics")
+        assert metrics.status_code == 200
+        assert 'devboxes_total{state="ready"} 1.0' in metrics.text
+        assert 'devboxes_total{state="stopped"} 1.0' in metrics.text
+
+
+def test_invalid_login_and_authenticated_logout() -> None:
+    with app_client() as client:
+        rejected = client.post("/auth/login", data={"token": "not-the-token"})
+        assert rejected.status_code == 401
+        assert "was not accepted" in rejected.text
+
+        client.post(
+            "/auth/login",
+            data={"token": "test-access-token-at-least-32-characters"},
+        )
+        csrf = client.cookies.get("devboxes_csrf")
+        response = client.post("/auth/logout", headers={"X-Devboxes-CSRF": csrf})
+        assert response.status_code == 204
+        assert client.get("/", follow_redirects=False).status_code == 303
+
+
 def test_documentation_teaches_the_terminal_workflow() -> None:
     with app_client() as client:
         client.post("/auth/login", data={"token": "test-access-token-at-least-32-characters"})
@@ -75,6 +101,45 @@ def test_cli_bearer_can_create_a_devbox() -> None:
         assert response.status_code == 201
         assert response.json()["name"] == "compiler"
         assert response.json()["state"] == "starting"
+
+
+def test_cli_bearer_can_inspect_and_control_a_devbox() -> None:
+    headers = {"Authorization": "Bearer test-access-token-at-least-32-characters"}
+    with app_client() as client:
+        assert client.get("/api/v1/whoami", headers=headers).json() == {
+            "user": "operator",
+            "mode": "bearer",
+        }
+        assert client.get("/api/v1/devboxes/atlas", headers=headers).status_code == 200
+
+        stopped = client.post("/api/v1/devboxes/atlas/stop", headers=headers)
+        assert stopped.json()["state"] == "stopped"
+
+        started = client.post("/api/v1/devboxes/atlas/start", headers=headers)
+        assert started.json()["state"] == "starting"
+
+        deleted = client.delete("/api/v1/devboxes/atlas?purge=true", headers=headers)
+        assert deleted.json() == {
+            "name": "atlas",
+            "purged": True,
+            "message": "atlas deleted",
+        }
+
+
+def test_api_maps_conflicts_and_missing_names() -> None:
+    headers = {"Authorization": "Bearer test-access-token-at-least-32-characters"}
+    with app_client() as client:
+        conflict = client.post(
+            "/api/v1/devboxes",
+            headers=headers,
+            json={"name": "atlas"},
+        )
+        assert conflict.status_code == 409
+        assert "already exists" in conflict.json()["detail"]
+
+        missing = client.get("/api/v1/devboxes/missing", headers=headers)
+        assert missing.status_code == 404
+        assert "was not found" in missing.json()["detail"]
 
 
 def test_api_requires_authentication() -> None:

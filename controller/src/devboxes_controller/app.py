@@ -1,3 +1,5 @@
+"""Create and run the Devboxes HTTP application."""
+
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable
@@ -38,6 +40,7 @@ def create_app(
     settings: Settings | None = None,
     manager: DevboxManager | None = None,
 ) -> FastAPI:
+    """Create a configured FastAPI application and its lifecycle routes."""
     settings = settings or get_settings()
     manager = manager or DevboxManager(settings)
     authenticator = Authenticator(settings)
@@ -90,7 +93,7 @@ def create_app(
             response.headers.setdefault("Cache-Control", "no-store")
         return response
 
-    Auth = Annotated[AuthContext, Depends(authenticator.require)]
+    Auth = Annotated[AuthContext, Depends(authenticator.require)]  # noqa: N806
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:
@@ -109,7 +112,7 @@ def create_app(
     @app.get("/metrics", include_in_schema=False)
     async def metrics() -> Response:
         boxes = await manager.list()
-        counts = {state: 0 for state in ("starting", "ready", "stopped", "degraded")}
+        counts = dict.fromkeys(("starting", "ready", "stopped", "degraded"), 0)
         for box in boxes:
             counts[box.state.value] += 1
         for state_name, count in counts.items():
@@ -211,17 +214,16 @@ def create_app(
             },
         )
 
-    @app.get("/api/v1/whoami", response_model=WhoAmI, tags=["auth"])
+    @app.get("/api/v1/whoami", tags=["auth"])
     async def whoami(auth: Auth) -> WhoAmI:
         return WhoAmI(user=settings.display_name, mode=auth.mode)
 
-    @app.get("/api/v1/devboxes", response_model=DevboxList, tags=["devboxes"])
+    @app.get("/api/v1/devboxes", tags=["devboxes"])
     async def list_devboxes(_: Auth) -> DevboxList:
         return DevboxList(items=await manager.list())
 
     @app.post(
         "/api/v1/devboxes",
-        response_model=Devbox,
         status_code=status.HTTP_201_CREATED,
         tags=["devboxes"],
     )
@@ -235,19 +237,19 @@ def create_app(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
             ) from error
 
-    @app.get("/api/v1/devboxes/{name}", response_model=Devbox, tags=["devboxes"])
+    @app.get("/api/v1/devboxes/{name}", tags=["devboxes"])
     async def get_devbox(name: DevboxName, _: Auth) -> Devbox:
         return await _not_found(manager.get(name), name)
 
-    @app.post("/api/v1/devboxes/{name}/start", response_model=Devbox, tags=["devboxes"])
+    @app.post("/api/v1/devboxes/{name}/start", tags=["devboxes"])
     async def start_devbox(name: DevboxName, _: Auth) -> Devbox:
         return await _not_found(manager.scale(name, 1), name)
 
-    @app.post("/api/v1/devboxes/{name}/stop", response_model=Devbox, tags=["devboxes"])
+    @app.post("/api/v1/devboxes/{name}/stop", tags=["devboxes"])
     async def stop_devbox(name: DevboxName, _: Auth) -> Devbox:
         return await _not_found(manager.scale(name, 0), name)
 
-    @app.delete("/api/v1/devboxes/{name}", response_model=DeleteResult, tags=["devboxes"])
+    @app.delete("/api/v1/devboxes/{name}", tags=["devboxes"])
     async def delete_devbox(
         name: DevboxName,
         _: Auth,
@@ -280,6 +282,7 @@ async def _cleanup_loop(manager: DevboxManager, interval: int) -> None:
 
 
 def main() -> None:
+    """Run the production controller with proxy header support."""
     settings = get_settings()
     logging.basicConfig(
         level=settings.log_level,
