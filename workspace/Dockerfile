@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 FROM rust:1.96-bookworm AS rust-toolchain
-FROM node:24.18-bookworm AS node-toolchain
+FROM node:26.5-bookworm AS node-toolchain
 FROM ghcr.io/astral-sh/uv:0.11.26 AS uv-toolchain
 FROM python:3.14-bookworm
 
