@@ -84,7 +84,7 @@ impl ApiClient {
 
     async fn request<B, R>(&self, method: Method, path: &str, body: Option<&B>) -> Result<R>
     where
-        B: Serialize + ?Sized,
+        B: Serialize + Sync + ?Sized,
         R: DeserializeOwned,
     {
         let mut request = self

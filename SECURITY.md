@@ -36,4 +36,4 @@ The CLI refuses plaintext HTTP except exact loopback hosts. It has no skip-TLS-v
 
 ## Dependency and supply-chain policy
 
-Dependabot monitors Cargo, Python, Docker, and GitHub Actions dependencies. CI builds both images, performs strict controller and CLI checks, validates Helm output, and installs into a clean Kind cluster. Release images are published for amd64 and arm64 with GitHub artifact attestations; CLI archives include SHA-256 checksums.
+Dependabot monitors npm, Cargo, Python, Docker, and GitHub Actions dependencies. Pull requests receive dependency review, and CI audits npm, Python, and Cargo dependencies, builds both images, performs strict JavaScript, documentation, controller, and CLI checks, validates Helm output, and installs into a clean Kind cluster. Release images are published for amd64 and arm64 with GitHub artifact attestations; CLI archives include SHA-256 checksums.

@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from datetime import UTC, datetime, timedelta
 
+from devboxes_controller.manager import DevboxConflictError, DevboxNotFoundError
 from devboxes_controller.models import (
     CreateDevboxRequest,
     DeleteResult,
@@ -56,9 +59,14 @@ class FakeManager:
         return self.boxes
 
     async def get(self, name: str) -> Devbox:
-        return next(box for box in self.boxes if box.name == name)
+        try:
+            return next(box for box in self.boxes if box.name == name)
+        except StopIteration as error:
+            raise DevboxNotFoundError(name) from error
 
     async def create(self, request: CreateDevboxRequest) -> Devbox:
+        if any(box.name == request.name for box in self.boxes):
+            raise DevboxConflictError(f"devbox {request.name!r} already exists")
         box = sample_devbox(request.name, DevboxState.STARTING, request.preset)
         box.repository = request.repository
         box.ssh_host = None

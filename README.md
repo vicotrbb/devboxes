@@ -6,6 +6,8 @@
 
 Devboxes turns Kubernetes capacity into ready-to-use development machines. Create one from your terminal, connect over SSH, and return to the same tmux session after a disconnect. Compute is disposable; the home volume persists until you explicitly purge it.
 
+For the recommended production-shaped setup and fastest daily workflow, follow the [golden path](docs/golden-path.md). The complete documentation map is in [docs/index.md](docs/index.md).
+
 ```console
 $ devbox create atlas --preset medium --repo owner/project --ssh
 → preparing atlas…
@@ -225,6 +227,14 @@ make images
 CI repeats these gates and performs a clean Kind-cluster Helm install with an authenticated API smoke test. Release tags publish four CLI targets, two multi-architecture images, checksums, provenance attestations for images, and the OCI Helm chart.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change. Security reports belong in a private [GitHub security advisory](https://github.com/vicotrbb/devboxes/security/advisories/new), not a public issue.
+
+## Documentation
+
+- [Golden path](docs/golden-path.md) for a performance-oriented installation and daily workflow.
+- [CLI reference](docs/cli.md) and [API reference](docs/api.md) for client contracts.
+- [Configuration](docs/configuration.md) and [credentials](docs/credentials.md) for installation details.
+- [Operations](docs/operations.md) and [troubleshooting](docs/troubleshooting.md) for production ownership.
+- [Architecture](docs/architecture.md) and [development](docs/development.md) for maintainers.
 
 ## Project status
 

@@ -1,3 +1,5 @@
+"""Build Kubernetes manifests for managed devbox resources."""
+
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -38,10 +40,12 @@ PRESETS: dict[Preset, dict[str, str]] = {
 
 
 def resource_name(name: str) -> str:
+    """Return the deterministic Kubernetes resource name for a devbox."""
     return f"devbox-{name}"
 
 
 def labels(name: str) -> dict[str, str]:
+    """Return ownership and lookup labels for a managed devbox."""
     return {
         "app.kubernetes.io/name": "devbox",
         "app.kubernetes.io/instance": resource_name(name),
@@ -52,6 +56,7 @@ def labels(name: str) -> dict[str, str]:
 
 
 def annotations(request: CreateDevboxRequest, now: datetime | None = None) -> dict[str, str]:
+    """Return lifecycle and user-input annotations for a new devbox."""
     now = now or datetime.now(UTC)
     result = {
         ANNOTATION_CREATED_AT: now.isoformat(),
@@ -70,6 +75,7 @@ def build_pvc(
     namespace: str,
     storage_class: str | None,
 ) -> dict[str, Any]:
+    """Build the persistent home volume claim for a devbox."""
     manifest: dict[str, Any] = {
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
@@ -98,6 +104,7 @@ def build_deployment(
     image_pull_secret: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    """Build the disposable workspace Deployment for a devbox."""
     name = resource_name(request.name)
     box_labels = labels(request.name)
     env = [
@@ -226,6 +233,7 @@ def build_service(
     external_traffic_policy: str = "Cluster",
     load_balancer_source_ranges: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Build the externally reachable SSH Service for a devbox."""
     port: dict[str, Any] = {
         "name": "ssh",
         "port": 22,

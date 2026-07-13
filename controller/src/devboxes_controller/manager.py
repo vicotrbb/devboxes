@@ -1,3 +1,5 @@
+"""Manage the Kubernetes resources that implement devbox lifecycles."""
+
 import asyncio
 import builtins
 import logging
@@ -39,14 +41,16 @@ logger = logging.getLogger(__name__)
 
 
 class DevboxNotFoundError(Exception):
-    pass
+    """Signal that a requested managed devbox does not exist."""
 
 
 class DevboxConflictError(Exception):
-    pass
+    """Signal that a requested devbox name is already active."""
 
 
 class DevboxManager:
+    """Translate lifecycle requests into namespaced Kubernetes resources."""
+
     def __init__(
         self,
         settings: Settings,
@@ -69,6 +73,7 @@ class DevboxManager:
             logger.info("loaded kubeconfig context %s", settings.kubeconfig_context or "current")
 
     async def ready(self) -> bool:
+        """Return whether the controller can list namespaced Deployments."""
         try:
             await asyncio.to_thread(
                 self.apps.list_namespaced_deployment,
@@ -80,6 +85,7 @@ class DevboxManager:
         return True
 
     async def create(self, request: CreateDevboxRequest) -> Devbox:
+        """Create compute, SSH, and persistent storage for a devbox."""
         if request.ttl_hours > self.settings.max_ttl_hours:
             raise ValueError(f"ttl_hours cannot exceed {self.settings.max_ttl_hours}")
 
@@ -149,6 +155,7 @@ class DevboxManager:
         return await self.get(request.name)
 
     async def list(self) -> list[Devbox]:
+        """List managed devboxes in reverse creation order."""
         selector = f"{LABEL_MANAGED_BY}={MANAGED_BY}"
         deployments, services, pods = await asyncio.gather(
             asyncio.to_thread(
@@ -185,6 +192,7 @@ class DevboxManager:
         return sorted(result, key=lambda item: item.created_at, reverse=True)
 
     async def get(self, name: str) -> Devbox:
+        """Return the current model for one managed devbox."""
         resource = resource_name(name)
         try:
             deployment, service, pods = await asyncio.gather(
@@ -212,6 +220,7 @@ class DevboxManager:
         return self._to_model(deployment, service, pod)
 
     async def scale(self, name: str, replicas: int) -> Devbox:
+        """Start or stop a devbox while preserving its home volume."""
         resource = resource_name(name)
         try:
             if replicas == 1:
@@ -256,6 +265,7 @@ class DevboxManager:
         return await self.get(name)
 
     async def delete(self, name: str, purge: bool) -> DeleteResult:
+        """Delete compute and SSH resources, optionally deleting storage."""
         resource = resource_name(name)
         if not await self._deployment_exists(resource):
             raise DevboxNotFoundError(name)
@@ -276,6 +286,7 @@ class DevboxManager:
         )
 
     async def stop_expired(self) -> builtins.list[str]:
+        """Stop every active devbox whose TTL has expired."""
         now = datetime.now(UTC)
         stopped: builtins.list[str] = []
         for box in await self.list():

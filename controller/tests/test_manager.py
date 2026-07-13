@@ -3,11 +3,19 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from kubernetes.client.exceptions import ApiException
 
 from devboxes_controller.config import Settings
-from devboxes_controller.manager import DevboxManager, _service_endpoint, _ttl_hours
-from devboxes_controller.models import CreateDevboxRequest, Preset
+from devboxes_controller.manager import (
+    DevboxConflictError,
+    DevboxManager,
+    DevboxNotFoundError,
+    _service_endpoint,
+    _state,
+    _ttl_hours,
+)
+from devboxes_controller.models import CreateDevboxRequest, DevboxState, Preset
 from devboxes_controller.resources import (
     ANNOTATION_CREATED_AT,
     ANNOTATION_EXPIRES_AT,
@@ -17,6 +25,8 @@ from devboxes_controller.resources import (
     LABEL_NAME,
 )
 
+from .fakes import sample_devbox
+
 
 def test_ttl_hours_rejects_missing_invalid_and_out_of_range_values() -> None:
     assert _ttl_hours(None, default=24, maximum=168) == 24
@@ -24,6 +34,143 @@ def test_ttl_hours_rejects_missing_invalid_and_out_of_range_values() -> None:
     assert _ttl_hours("0", default=24, maximum=168) == 24
     assert _ttl_hours("169", default=24, maximum=168) == 24
     assert _ttl_hours("72", default=24, maximum=168) == 72
+
+
+def test_readiness_reports_kubernetes_api_failures() -> None:
+    apps = Mock()
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=Mock(),
+    )
+
+    assert asyncio.run(manager.ready()) is True
+
+    apps.list_namespaced_deployment.side_effect = ApiException(status=503)
+    assert asyncio.run(manager.ready()) is False
+
+
+def test_create_rejects_installation_ttl_limit_and_active_name() -> None:
+    apps = Mock()
+    manager = DevboxManager(
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            max_ttl_hours=24,
+        ),
+        apps_api=apps,
+        core_api=Mock(),
+    )
+
+    with pytest.raises(ValueError, match="cannot exceed 24"):
+        asyncio.run(manager.create(CreateDevboxRequest(name="atlas", ttl_hours=25)))
+
+    with pytest.raises(DevboxConflictError, match="already exists"):
+        asyncio.run(manager.create(CreateDevboxRequest(name="atlas", ttl_hours=24)))
+
+
+def test_create_removes_deployment_when_service_creation_fails() -> None:
+    apps = Mock()
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    core = Mock()
+    core.read_namespaced_persistent_volume_claim.side_effect = ApiException(status=404)
+    core.create_namespaced_service.side_effect = ApiException(status=500)
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=core,
+    )
+
+    with pytest.raises(ApiException):
+        asyncio.run(manager.create(CreateDevboxRequest(name="atlas")))
+
+    apps.delete_namespaced_deployment.assert_called_once()
+    core.create_namespaced_persistent_volume_claim.assert_called_once()
+
+
+@pytest.mark.parametrize("purge", [False, True])
+def test_delete_preserves_or_purges_storage_explicitly(purge: bool) -> None:
+    apps = Mock()
+    core = Mock()
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=core,
+    )
+
+    result = asyncio.run(manager.delete("atlas", purge))
+
+    apps.delete_namespaced_deployment.assert_called_once()
+    core.delete_namespaced_service.assert_called_once()
+    assert core.delete_namespaced_persistent_volume_claim.called is purge
+    assert result.purged is purge
+    assert ("deleted" if purge else "retained") in result.message
+
+
+def test_delete_rejects_unknown_devbox() -> None:
+    apps = Mock()
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=Mock(),
+    )
+
+    with pytest.raises(DevboxNotFoundError):
+        asyncio.run(manager.delete("missing", purge=False))
+
+
+def test_stop_expired_stops_only_active_expired_boxes() -> None:
+    now = datetime.now(UTC)
+    expired = sample_devbox("expired")
+    expired.expires_at = now - timedelta(minutes=1)
+    stopped = sample_devbox("stopped", DevboxState.STOPPED)
+    stopped.expires_at = now - timedelta(hours=1)
+    active = sample_devbox("active")
+    active.expires_at = now + timedelta(hours=1)
+    apps = Mock()
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=Mock(),
+    )
+    manager.list = AsyncMock(return_value=[expired, stopped, active])  # type: ignore[method-assign]
+
+    assert asyncio.run(manager.stop_expired()) == ["expired"]
+
+    name, namespace, body = apps.patch_namespaced_deployment.call_args.args
+    assert (name, namespace) == ("devbox-expired", "devboxes")
+    assert body["spec"]["replicas"] == 0
+
+
+def test_state_reports_readiness_and_known_failures() -> None:
+    ready_pod = SimpleNamespace(
+        status=SimpleNamespace(phase="Running", conditions=[], container_statuses=[])
+    )
+    failed_pod = SimpleNamespace(
+        status=SimpleNamespace(
+            phase="Running",
+            conditions=[],
+            container_statuses=[
+                SimpleNamespace(
+                    state=SimpleNamespace(waiting=SimpleNamespace(reason="ImagePullBackOff"))
+                )
+            ],
+        )
+    )
+
+    assert _state(0, None, False, None)[0] is DevboxState.STOPPED
+    assert _state(1, ready_pod, True, None) == (
+        DevboxState.STARTING,
+        "Waiting for an SSH service address",
+    )
+    assert _state(1, failed_pod, False, None) == (
+        DevboxState.DEGRADED,
+        "ImagePullBackOff",
+    )
+    assert _state(1, None, False, None) == (
+        DevboxState.STARTING,
+        "Preparing workspace and SSH",
+    )
 
 
 def test_start_renews_the_original_ttl_atomically() -> None:

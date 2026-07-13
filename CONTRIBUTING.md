@@ -17,7 +17,8 @@ By participating, you agree to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) a
 2. Read [docs/development.md](docs/development.md) and the relevant architecture or configuration documentation.
 3. Add or update tests for behavioral changes.
 4. Keep controller, CLI, Helm, dashboard, and documentation contracts synchronized.
-5. Run the local gates:
+5. Write direct technical prose without em dash punctuation. Prefer commas, periods, or explicit connecting words.
+6. Run the local gates:
 
    ```bash
    make bootstrap
@@ -26,7 +27,7 @@ By participating, you agree to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) a
    make helm
    ```
 
-6. Describe the user-visible behavior, risks, migration impact, and validation evidence in the pull request.
+7. Describe the user-visible behavior, risks, migration impact, and validation evidence in the pull request.
 
 ## Engineering expectations
 
@@ -36,6 +37,10 @@ By participating, you agree to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) a
 - Maintain both `LoadBalancer` and `NodePort` SSH paths.
 - Keep the CLI usable in scripts: errors go to stderr, JSON remains stable within a release line, and tokens should not be required on command lines.
 - Keep UI workflows fully keyboard accessible, WCAG 2.2 AA, status-text-first, and compatible with reduced motion.
+- Keep browser JavaScript dependency-light, lint-clean, progressively enhanced, and free of inline event handlers.
+- Keep public Python modules, classes, functions, and methods documented and strictly typed.
+- Keep controller test coverage at or above the enforced 85 percent project threshold.
+- Keep Rust clean under formatting, standard warnings, Clippy `all`, `pedantic`, and `nursery` lint groups.
 - Prefer small, reviewable changes over unrelated cleanup.
 
 ## Pull requests

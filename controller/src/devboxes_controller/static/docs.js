@@ -18,10 +18,14 @@ function announce(message) {
 
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-copy-target]");
-  if (!button) return;
+  if (!button) {
+    return;
+  }
 
   const target = document.getElementById(button.dataset.copyTarget);
-  if (!target) return;
+  if (!target) {
+    return;
+  }
 
   const originalLabel = button.textContent;
   window.clearTimeout(button.copyResetTimer);
@@ -29,26 +33,30 @@ document.addEventListener("click", async (event) => {
     await navigator.clipboard.writeText(target.textContent.trim());
     button.textContent = "Copied";
     announce("Commands copied to the clipboard.");
-  } catch (_) {
+  } catch {
     button.textContent = "Try again";
-    announce("Clipboard access was denied. Select and copy the commands manually.");
+    announce(
+      "Clipboard access was denied. Select and copy the commands manually.",
+    );
   }
   button.copyResetTimer = window.setTimeout(() => {
     button.textContent = originalLabel;
   }, 2200);
 });
 
-document.querySelector("#logout-button")?.addEventListener("click", async () => {
-  const csrf = decodeURIComponent(cookie("devboxes_csrf") || "");
-  try {
-    await fetch("/auth/logout", {
-      method: "POST",
-      headers: { "X-Devboxes-CSRF": csrf },
-    });
-  } finally {
-    window.location.assign("/login");
-  }
-});
+document
+  .querySelector("#logout-button")
+  ?.addEventListener("click", async () => {
+    const csrf = decodeURIComponent(cookie("devboxes_csrf") || "");
+    try {
+      await fetch("/auth/logout", {
+        method: "POST",
+        headers: { "X-Devboxes-CSRF": csrf },
+      });
+    } finally {
+      window.location.assign("/login");
+    }
+  });
 
 function markCurrentSection(id) {
   for (const link of tocLinks) {
@@ -70,8 +78,13 @@ if (observedSections.length) {
     (entries) => {
       const visible = entries
         .filter((entry) => entry.isIntersecting)
-        .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top);
-      if (visible[0]) markCurrentSection(visible[0].target.id);
+        .sort(
+          (left, right) =>
+            left.boundingClientRect.top - right.boundingClientRect.top,
+        );
+      if (visible[0]) {
+        markCurrentSection(visible[0].target.id);
+      }
     },
     { rootMargin: "-18% 0px -72% 0px" },
   );

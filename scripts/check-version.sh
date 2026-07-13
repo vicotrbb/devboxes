@@ -4,7 +4,7 @@ set -eu
 project_directory="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 
 chart_version="$(awk '/^version:/ {print $2; exit}' "$project_directory/charts/devboxes/Chart.yaml")"
-app_version="$(awk '/^appVersion:/ {gsub(/\"/, "", $2); print $2; exit}' "$project_directory/charts/devboxes/Chart.yaml")"
+app_version="$(awk '/^appVersion:/ {gsub(/"/, "", $2); print $2; exit}' "$project_directory/charts/devboxes/Chart.yaml")"
 cargo_version="$(awk -F '"' '/^version = / {print $2; exit}' "$project_directory/cli/Cargo.toml")"
 python_version="$(awk -F '"' '/^version = / {print $2; exit}' "$project_directory/controller/pyproject.toml")"
 package_version="$(awk -F '"' '/^__version__ = / {print $2; exit}' "$project_directory/controller/src/devboxes_controller/__init__.py")"
