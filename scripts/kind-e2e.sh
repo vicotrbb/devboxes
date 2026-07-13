@@ -28,11 +28,19 @@ cleanup() {
     kubectl --context "kind-$cluster" get all,pvc -n "$namespace" -o wide >&2 || true
     kubectl --context "kind-$cluster" describe pods -n "$namespace" >&2 || true
     kubectl --context "kind-$cluster" logs -n "$namespace" deployment/devboxes --tail=200 >&2 || true
-    [[ -f "$temporary_directory/controller-port-forward.log" ]] && cat "$temporary_directory/controller-port-forward.log" >&2
-    [[ -f "$temporary_directory/ssh-port-forward.log" ]] && cat "$temporary_directory/ssh-port-forward.log" >&2
+    if [[ -f "$temporary_directory/controller-port-forward.log" ]]; then
+      cat "$temporary_directory/controller-port-forward.log" >&2
+    fi
+    if [[ -f "$temporary_directory/ssh-port-forward.log" ]]; then
+      cat "$temporary_directory/ssh-port-forward.log" >&2
+    fi
   fi
-  [[ -n "$ssh_port_forward" ]] && kill "$ssh_port_forward" >/dev/null 2>&1 || true
-  [[ -n "$controller_port_forward" ]] && kill "$controller_port_forward" >/dev/null 2>&1 || true
+  if [[ -n "$ssh_port_forward" ]]; then
+    kill "$ssh_port_forward" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$controller_port_forward" ]]; then
+    kill "$controller_port_forward" >/dev/null 2>&1 || true
+  fi
   if [[ "${DEVBOXES_E2E_KEEP_CLUSTER:-0}" != 1 ]]; then
     kind delete cluster --name "$cluster" >/dev/null 2>&1 || true
   fi
