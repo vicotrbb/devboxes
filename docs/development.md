@@ -2,8 +2,9 @@
 
 ## Tooling
 
-- Rust stable and Cargo for the CLI.
+- Rust 1.96 and Cargo for the CLI, pinned by `rust-toolchain.toml`.
 - Python 3.12+ and `uv` for the controller.
+- Node.js 24+ and npm for JavaScript, Markdown, and repository checks.
 - Docker with BuildKit for images.
 - Helm 3.14+ or 4 and `kubectl` for packaging.
 - ShellCheck for installation and workspace scripts.
@@ -46,7 +47,7 @@ Set `DEVBOX_CONFIG` to a temporary path during development to avoid changing you
 
 ## Dashboard
 
-The server-rendered UI lives under `controller/src/devboxes_controller/templates`, with plain CSS and JavaScript under `static`. Preserve the design contract in [DESIGN.md](../DESIGN.md): WCAG 2.2 AA contrast, complete keyboard operation, visible focus, textual status, and reduced-motion support.
+The server-rendered UI lives under `controller/src/devboxes_controller/templates`, with plain CSS and JavaScript under `static`. Preserve WCAG 2.2 AA contrast, complete keyboard operation, visible focus, textual status, responsive layouts, and reduced-motion support. Keep inline scripts and handlers out of templates so the Content Security Policy remains strict.
 
 The test fake can preview all lifecycle states without a Kubernetes cluster:
 
@@ -54,6 +55,29 @@ The test fake can preview all lifecycle states without a Kubernetes cluster:
 cd controller
 uv run uvicorn tests.preview_app:app --port 8000
 ```
+
+Run JavaScript, documentation, and formatting gates from the repository root:
+
+```bash
+npm ci
+npm run lint
+```
+
+The documentation check validates local Markdown targets and rejects em dash and en dash punctuation in Markdown and HTML prose. Markdownlint enforces structure, ESLint uses the current flat configuration and recommended correctness rules, and Prettier checks browser and repository JavaScript formatting.
+
+## Code layout
+
+| Path | Responsibility |
+| --- | --- |
+| `cli/` | Rust command parsing, configuration, API client, SSH process, and output |
+| `controller/src/devboxes_controller/` | FastAPI routes, authentication, settings, Kubernetes lifecycle, schemas, and manifests |
+| `controller/tests/` | Unit and API regression tests plus the local UI preview fake |
+| `charts/devboxes/` | Helm defaults, values schema, namespaced RBAC, and Kubernetes templates |
+| `workspace/` | Workspace image, SSH entrypoint, shell setup, tmux, and secret bootstrap |
+| `scripts/` | Installation, verification, release consistency, documentation, and Kind E2E tooling |
+| `docs/` | Public installation, usage, architecture, operations, troubleshooting, and development documentation |
+
+Do not commit local plans, product specifications, generated previews, rendered Secrets, build artifacts, or caches. Test helpers stay next to the tests that consume them. User-facing examples and durable operational guidance belong under `docs/`.
 
 ## Helm and Kind
 

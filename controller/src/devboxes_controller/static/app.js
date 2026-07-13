@@ -35,9 +35,14 @@ async function api(path, options = {}) {
   const method = options.method || "GET";
   const headers = new Headers(options.headers || {});
   headers.set("Accept", "application/json");
-  if (options.body) headers.set("Content-Type", "application/json");
+  if (options.body) {
+    headers.set("Content-Type", "application/json");
+  }
   if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
-    headers.set("X-Devboxes-CSRF", decodeURIComponent(cookie("devboxes_csrf") || ""));
+    headers.set(
+      "X-Devboxes-CSRF",
+      decodeURIComponent(cookie("devboxes_csrf") || ""),
+    );
   }
   const response = await fetch(path, { ...options, method, headers });
   if (response.status === 401) {
@@ -53,19 +58,25 @@ async function api(path, options = {}) {
       } else if (payload.detail) {
         message = payload.detail;
       }
-    } catch (_) {
+    } catch {
       // The HTTP status remains useful when an upstream response is not JSON.
     }
     throw new Error(message);
   }
-  if (response.status === 204) return null;
+  if (response.status === 204) {
+    return null;
+  }
   return response.json();
 }
 
 function node(tag, className, text) {
   const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text !== undefined) element.textContent = text;
+  if (className) {
+    element.className = className;
+  }
+  if (text !== undefined) {
+    element.textContent = text;
+  }
   return element;
 }
 
@@ -86,11 +97,17 @@ function actionButton(label, action, box, danger = false) {
 }
 
 function formatExpiry(box) {
-  if (box.state === "stopped") return "Stopped safely";
+  if (box.state === "stopped") {
+    return "Stopped safely";
+  }
   const difference = new Date(box.expires_at).getTime() - Date.now();
-  if (difference <= 0) return "Stopping now";
+  if (difference <= 0) {
+    return "Stopping now";
+  }
   const hours = Math.ceil(difference / 3_600_000);
-  if (hours <= 24) return `in ${hours} hour${hours === 1 ? "" : "s"}`;
+  if (hours <= 24) {
+    return `in ${hours} hour${hours === 1 ? "" : "s"}`;
+  }
   const days = Math.ceil(hours / 24);
   return `in ${days} day${days === 1 ? "" : "s"}`;
 }
@@ -102,19 +119,29 @@ function renderBox(box) {
   nameCell.scope = "row";
   nameCell.append(node("span", "devbox-name", box.name));
   const details = [box.preset, box.storage_size];
-  if (box.repository) details.push(box.repository);
+  if (box.repository) {
+    details.push(box.repository);
+  }
   nameCell.append(meta(details.join(" · ")));
 
   const stateCell = document.createElement("td");
   stateCell.append(node("span", `status-chip status-${box.state}`, box.state));
-  if (box.message) stateCell.append(meta(box.message));
+  if (box.message) {
+    stateCell.append(meta(box.message));
+  }
 
   const workspaceCell = document.createElement("td");
   if (box.state === "stopped") {
     workspaceCell.append(node("span", "cell-note", "Home volume retained"));
   } else if (box.ssh_command) {
     workspaceCell.append(node("code", "ssh-command", box.ssh_command));
-    workspaceCell.append(meta(box.restarts ? `${box.restarts} container restarts` : "tmux session main"));
+    workspaceCell.append(
+      meta(
+        box.restarts
+          ? `${box.restarts} container restarts`
+          : "tmux session main",
+      ),
+    );
   } else {
     workspaceCell.append(node("span", "cell-note", "SSH address pending"));
   }
@@ -142,12 +169,19 @@ function renderBox(box) {
 
 function focusedRowAction() {
   const active = document.activeElement;
-  if (!(active instanceof HTMLButtonElement) || !elements.rows.contains(active)) return null;
+  if (
+    !(active instanceof HTMLButtonElement) ||
+    !elements.rows.contains(active)
+  ) {
+    return null;
+  }
   return { name: active.dataset.name, action: active.dataset.action };
 }
 
 function restoreRowAction(focused) {
-  if (!focused?.name) return;
+  if (!focused?.name) {
+    return;
+  }
   const sameAction = elements.rows.querySelector(
     `button[data-name="${focused.name}"][data-action="${focused.action}"]`,
   );
@@ -155,7 +189,9 @@ function restoreRowAction(focused) {
     `button[data-name="${focused.name}"][data-action="start"], ` +
       `button[data-name="${focused.name}"][data-action="stop"]`,
   );
-  const fallback = elements.rows.querySelector(`button[data-name="${focused.name}"]`);
+  const fallback = elements.rows.querySelector(
+    `button[data-name="${focused.name}"]`,
+  );
   (sameAction || lifecycleAction || fallback)?.focus({ preventScroll: true });
 }
 
@@ -176,7 +212,9 @@ function render() {
 }
 
 async function loadBoxes({ quiet = false } = {}) {
-  if (!quiet) elements.refreshButton.disabled = true;
+  if (!quiet) {
+    elements.refreshButton.disabled = true;
+  }
   try {
     const payload = await api("/api/v1/devboxes");
     state.boxes = payload.items;
@@ -192,7 +230,9 @@ async function perform(name, action) {
   const labels = { start: "Starting", stop: "Stopping" };
   toast(`${labels[action]} ${name}…`);
   try {
-    await api(`/api/v1/devboxes/${encodeURIComponent(name)}/${action}`, { method: "POST" });
+    await api(`/api/v1/devboxes/${encodeURIComponent(name)}/${action}`, {
+      method: "POST",
+    });
     await loadBoxes({ quiet: true });
     toast(`${name} ${action === "start" ? "is starting" : "stopped safely"}.`);
   } catch (error) {
@@ -204,7 +244,7 @@ async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
     toast("Copied to clipboard.");
-  } catch (_) {
+  } catch {
     toast("Clipboard access was denied.", true);
   }
 }
@@ -229,7 +269,10 @@ elements.createForm.addEventListener("submit", async (event) => {
   submit.disabled = true;
   submit.setAttribute("aria-busy", "true");
   try {
-    await api("/api/v1/devboxes", { method: "POST", body: JSON.stringify(payload) });
+    await api("/api/v1/devboxes", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
     elements.createForm.reset();
     toast(`${payload.name} is being prepared.`);
     await loadBoxes({ quiet: true });
@@ -245,9 +288,13 @@ elements.createForm.addEventListener("submit", async (event) => {
 
 elements.rows.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-action]");
-  if (!button) return;
+  if (!button) {
+    return;
+  }
   const box = state.boxes.find((item) => item.name === button.dataset.name);
-  if (!box) return;
+  if (!box) {
+    return;
+  }
   if (button.dataset.action === "copy" && box.ssh_command) {
     copyText(box.ssh_command);
   } else if (["start", "stop"].includes(button.dataset.action)) {
@@ -263,7 +310,9 @@ elements.rows.addEventListener("click", (event) => {
 
 elements.confirmDelete.addEventListener("click", async (event) => {
   event.preventDefault();
-  if (!state.deleteName) return;
+  if (!state.deleteName) {
+    return;
+  }
   const name = state.deleteName;
   const purge = elements.purgeVolume.checked;
   elements.confirmDelete.disabled = true;
@@ -285,7 +334,10 @@ elements.confirmDelete.addEventListener("click", async (event) => {
 });
 
 elements.deleteDialog.addEventListener("close", () => {
-  if (elements.deleteDialog.returnValue !== "deleted" && state.deleteTrigger?.isConnected) {
+  if (
+    elements.deleteDialog.returnValue !== "deleted" &&
+    state.deleteTrigger?.isConnected
+  ) {
     state.deleteTrigger.focus({ preventScroll: true });
   }
   state.deleteName = null;
@@ -304,7 +356,9 @@ elements.logoutButton.addEventListener("click", async () => {
 
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-copy]");
-  if (button) copyText(button.dataset.copy);
+  if (button) {
+    copyText(button.dataset.copy);
+  }
 });
 
 loadBoxes();

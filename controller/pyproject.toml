@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Controller and dashboard for self-hosted Kubernetes development environments"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+keywords = ["development-environments", "fastapi", "kubernetes", "ssh"]
 dependencies = [
   "fastapi>=0.116,<1",
   "jinja2>=3.1,<4",
@@ -28,6 +30,12 @@ dev = [
 [project.scripts]
 devboxes-controller = "devboxes_controller.app:main"
 
+[project.urls]
+Changelog = "https://github.com/vicotrbb/devboxes/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/vicotrbb/devboxes/blob/main/docs/index.md"
+Issues = "https://github.com/vicotrbb/devboxes/issues"
+Repository = "https://github.com/vicotrbb/devboxes"
+
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
@@ -48,10 +56,30 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "S", "SIM", "RUF"]
+select = [
+  "ASYNC",
+  "B",
+  "C4",
+  "D",
+  "DTZ",
+  "E",
+  "F",
+  "FAST",
+  "I",
+  "LOG",
+  "N",
+  "PERF",
+  "PIE",
+  "RET",
+  "RUF",
+  "S",
+  "SIM",
+  "UP",
+]
+ignore = ["D107", "D203", "D213"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106"]
+"tests/**" = ["D", "S101", "S105", "S106"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -60,5 +88,5 @@ ignore_missing_imports = true
 packages = ["devboxes_controller"]
 
 [tool.pytest.ini_options]
-addopts = "-q --cov=devboxes_controller --cov-report=term-missing"
+addopts = "-q --cov=devboxes_controller --cov-report=term-missing --cov-fail-under=85"
 testpaths = ["tests"]

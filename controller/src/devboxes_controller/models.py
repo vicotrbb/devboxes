@@ -1,3 +1,5 @@
+"""Define validated request and response models for the controller API."""
+
 import re
 from datetime import datetime
 from enum import StrEnum
@@ -11,12 +13,16 @@ REPOSITORY_RE = re.compile(
 
 
 class Preset(StrEnum):
+    """Identify a supported workspace resource preset."""
+
     SMALL = "small"
     MEDIUM = "medium"
     LARGE = "large"
 
 
 class DevboxState(StrEnum):
+    """Describe the user-visible lifecycle state of a devbox."""
+
     STARTING = "starting"
     READY = "ready"
     STOPPED = "stopped"
@@ -24,6 +30,8 @@ class DevboxState(StrEnum):
 
 
 class CreateDevboxRequest(BaseModel):
+    """Validate a request to create a devbox."""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=40)
@@ -34,6 +42,7 @@ class CreateDevboxRequest(BaseModel):
     @field_validator("name")
     @classmethod
     def valid_name(cls, value: str) -> str:
+        """Normalize and validate a Kubernetes-safe devbox name."""
         value = value.strip().lower()
         if not DEVBOX_NAME_RE.fullmatch(value):
             raise ValueError(
@@ -44,6 +53,7 @@ class CreateDevboxRequest(BaseModel):
     @field_validator("repository")
     @classmethod
     def valid_repository(cls, value: str | None) -> str | None:
+        """Validate the optional GitHub repository clone source."""
         if value is None or not value.strip():
             return None
         value = value.strip()
@@ -53,6 +63,8 @@ class CreateDevboxRequest(BaseModel):
 
 
 class Devbox(BaseModel):
+    """Represent the observable state of one managed devbox."""
+
     name: str
     state: DevboxState
     preset: Preset
@@ -70,15 +82,21 @@ class Devbox(BaseModel):
 
 
 class DevboxList(BaseModel):
+    """Wrap the devbox collection returned by the list endpoint."""
+
     items: list[Devbox]
 
 
 class WhoAmI(BaseModel):
+    """Describe the authenticated controller identity and mechanism."""
+
     user: str
     mode: str
 
 
 class DeleteResult(BaseModel):
+    """Report the data-retention result of a delete operation."""
+
     name: str
     purged: bool
     message: str
