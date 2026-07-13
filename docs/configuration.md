@@ -110,3 +110,5 @@ helm upgrade devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
 ```
 
 Prefer an explicit values file over `--reuse-values` for long-lived GitOps installations because it makes configuration reviewable and reproducible.
+
+Follow the [golden path](golden-path.md) for performance-oriented defaults and the [operations runbook](operations.md) for rollout, backup, and recovery procedures.

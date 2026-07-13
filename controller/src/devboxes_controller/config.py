@@ -1,3 +1,5 @@
+"""Validate controller configuration loaded from environment variables."""
+
 from functools import lru_cache
 from typing import Literal, Self
 from urllib.parse import urlsplit
@@ -7,6 +9,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Define validated runtime settings for one Devboxes installation."""
+
     model_config = SettingsConfigDict(env_prefix="DEVBOXES_", case_sensitive=False)
 
     namespace: str = "devboxes"
@@ -37,6 +41,7 @@ class Settings(BaseSettings):
     @field_validator("namespace", "display_name", "cluster_name")
     @classmethod
     def text_is_not_blank(cls, value: str) -> str:
+        """Normalize required human-readable values and reject blanks."""
         if not value.strip():
             raise ValueError("must not be blank")
         return value.strip()
@@ -52,6 +57,7 @@ class Settings(BaseSettings):
     )
     @classmethod
     def blank_optional_text_is_none(cls, value: object) -> object:
+        """Normalize blank optional strings to missing values."""
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -59,6 +65,7 @@ class Settings(BaseSettings):
     @field_validator("external_url")
     @classmethod
     def external_url_is_http(cls, value: str) -> str:
+        """Require an absolute HTTP or HTTPS external URL."""
         value = value.strip().rstrip("/")
         parsed = urlsplit(value)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -68,6 +75,7 @@ class Settings(BaseSettings):
     @field_validator("default_ttl_hours", "max_ttl_hours", "cleanup_interval_seconds")
     @classmethod
     def positive_integer(cls, value: int) -> int:
+        """Require positive timing and TTL configuration values."""
         if value <= 0:
             raise ValueError("must be positive")
         return value
@@ -75,6 +83,7 @@ class Settings(BaseSettings):
     @field_validator("access_token")
     @classmethod
     def access_token_is_not_blank(cls, value: SecretStr) -> SecretStr:
+        """Require a controller token long enough to hold strong entropy."""
         token = value.get_secret_value().strip()
         if len(token) < 32:
             raise ValueError("access token must contain at least 32 characters")
@@ -82,6 +91,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def settings_are_consistent(self) -> Self:
+        """Validate relationships between independently parsed settings."""
         if self.default_ttl_hours > self.max_ttl_hours:
             raise ValueError("default_ttl_hours cannot exceed max_ttl_hours")
         if self.workspace_service_type == "NodePort" and not self.workspace_service_host:
@@ -91,5 +101,6 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Return the process-wide validated settings instance."""
     # BaseSettings supplies the required access token from DEVBOXES_ACCESS_TOKEN.
     return Settings()  # type: ignore[call-arg]

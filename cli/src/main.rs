@@ -27,7 +27,7 @@ struct Cli {
     #[arg(long, global = true)]
     url: Option<String>,
 
-    /// Override the API token (prefer DEVBOX_TOKEN to avoid shell history).
+    /// Override the API token (prefer `DEVBOX_TOKEN` to avoid shell history).
     #[arg(long, global = true)]
     token: Option<String>,
 
@@ -203,7 +203,7 @@ async fn create(
     let mut box_info = client.create(&payload).await?;
     if !args.no_wait || args.ssh {
         eprintln!("→ preparing {}…", box_info.name);
-        box_info = wait_until_ready(client, &box_info.name, Duration::from_secs(240)).await?;
+        box_info = wait_until_ready(client, &box_info.name, Duration::from_mins(4)).await?;
     }
     print_box(&box_info, json)?;
     if args.ssh {
@@ -265,7 +265,7 @@ async fn ssh(
     let box_info = if box_info.ssh_host.is_some() {
         box_info
     } else {
-        wait_until_ready(client, name, Duration::from_secs(180)).await?
+        wait_until_ready(client, name, Duration::from_mins(3)).await?
     };
     run_ssh(&box_info, ssh_args, server_alias).await
 }
