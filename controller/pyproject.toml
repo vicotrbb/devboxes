@@ -20,7 +20,7 @@ dev = [
   "httpx2>=2,<3",
   "mypy>=1.17,<2",
   "pip-audit>=2.10,<3",
-  "pytest>=8.4,<9",
+  "pytest>=8.4,<10",
   "pytest-cov>=6.2,<7",
   "ruff>=0.12,<1",
 ]
