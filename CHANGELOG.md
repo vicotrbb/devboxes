@@ -4,6 +4,13 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-13
+
+### Fixed
+
+- Made `devbox login` honor `DEVBOX_TOKEN` for non-interactive authentication.
+- Made the CLI trust operating-system certificate roots so self-hosted installations can use an administrator-installed private CA.
+
 ## [0.1.1] - 2026-07-13
 
 ### Added
@@ -34,6 +41,7 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 - Portable Helm chart with values schema, namespace-scoped RBAC, configurable storage, ingress, LoadBalancer or NodePort SSH, ServiceMonitor, and disruption budget.
 - macOS and Linux CLI releases, SHA-256 verification installer, GHCR images, OCI chart publishing, image provenance attestations, and clean Kind install CI.
 
-[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/vicotrbb/devboxes/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/vicotrbb/devboxes/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/vicotrbb/devboxes/releases/tag/v0.1.0

@@ -149,8 +149,8 @@ async fn login(url: Option<&str>, provided_token: Option<&str>) -> Result<()> {
                 "Devboxes API URL is not configured; pass `--url https://devboxes.example.com` or set DEVBOX_URL"
             )
         })?;
-    let token = match provided_token {
-        Some(token) => token.to_owned(),
+    let token = match resolve_login_token(provided_token, std::env::var("DEVBOX_TOKEN").ok()) {
+        Some(token) => token,
         None => rpassword::prompt_password("Devboxes access token: ")?,
     };
     let resolved = stored.resolve(Some(configured_url), Some(token.clone()))?;
@@ -166,6 +166,16 @@ async fn login(url: Option<&str>, provided_token: Option<&str>) -> Result<()> {
         path.display()
     );
     Ok(())
+}
+
+fn resolve_login_token(
+    provided_token: Option<&str>,
+    environment_token: Option<String>,
+) -> Option<String> {
+    provided_token
+        .map(str::to_owned)
+        .filter(|token| !token.trim().is_empty())
+        .or_else(|| environment_token.filter(|token| !token.trim().is_empty()))
 }
 
 fn validate_name(value: &str) -> std::result::Result<String, String> {
@@ -391,7 +401,24 @@ fn human_expiry(box_info: &Devbox) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ssh_arguments, validate_name};
+    use super::{resolve_login_token, ssh_arguments, validate_name};
+
+    #[test]
+    fn login_token_prefers_the_flag_and_supports_the_environment() {
+        assert_eq!(
+            resolve_login_token(Some("flag-token"), Some("environment-token".to_owned())),
+            Some("flag-token".to_owned())
+        );
+        assert_eq!(
+            resolve_login_token(None, Some("environment-token".to_owned())),
+            Some("environment-token".to_owned())
+        );
+        assert_eq!(
+            resolve_login_token(Some(""), Some("environment-token".to_owned())),
+            Some("environment-token".to_owned())
+        );
+        assert_eq!(resolve_login_token(None, Some("  ".to_owned())), None);
+    }
 
     #[test]
     fn devbox_names_match_the_controller_contract() {
