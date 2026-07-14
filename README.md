@@ -40,7 +40,7 @@ Devboxes is currently a single-operator system: one shared token controls every 
 - An SSH public key.
 - An ingress controller and TLS certificate only if you expose the dashboard through ingress. Port-forwarding works without either.
 
-The workspace container intentionally supports passwordless `sudo` for the trusted development user. Its pod drops all capabilities and adds back a small set needed by `sudo`, but it is not compatible with the Kubernetes `restricted` Pod Security profile. Use the `baseline` profile or an equivalent policy in the Devboxes namespace.
+The workspace container intentionally supports passwordless `sudo` for the trusted development user. Its pod drops all capabilities and adds back a small set needed by `sudo` and OpenSSH PTY auditing, but it is not compatible with the Kubernetes `restricted` Pod Security profile. Use the `baseline` profile or an equivalent policy in the Devboxes namespace.
 
 ## Install
 
@@ -84,7 +84,7 @@ kubectl -n devboxes create secret generic devboxes-workspace \
   --from-file=SSH_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub"
 
 helm install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
-  --version 0.2.0 \
+  --version 0.2.1 \
   --namespace devboxes
 ```
 

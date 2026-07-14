@@ -2,8 +2,8 @@ apiVersion: v2
 name: devboxes
 description: Self-hosted, ephemeral development environments on Kubernetes
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.2.1
+appVersion: "0.2.1"
 kubeVersion: ">=1.29.0-0"
 home: https://github.com/vicotrbb/devboxes
 icon: https://raw.githubusercontent.com/vicotrbb/devboxes/main/docs/assets/devboxes-mark.svg

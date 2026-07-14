@@ -225,9 +225,6 @@ jobs:
       - name: Run lifecycle through released CLI, chart, and images
         env:
           DEVBOXES_VERSION: ${{ github.ref_name }}
-          # GitHub-hosted runners cannot retain an SSH PTY through Kind's port-forward.
-          # CI separately validates the workspace shell and tmux with a real TTY.
-          DEVBOXES_E2E_INTERACTIVE_SSH: "0"
         run: |
           DEVBOXES_VERSION="${DEVBOXES_VERSION#v}" scripts/published-e2e.sh
 

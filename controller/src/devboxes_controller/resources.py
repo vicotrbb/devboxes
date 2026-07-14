@@ -141,10 +141,12 @@ def build_deployment(
                 },
                 "securityContext": {
                     # The trusted dev user needs setuid sudo inside this disposable container.
+                    # OpenSSH also writes a login audit record while allocating a PTY.
                     "allowPrivilegeEscalation": True,
                     "capabilities": {
                         "drop": ["ALL"],
                         "add": [
+                            "AUDIT_WRITE",
                             "CHOWN",
                             "DAC_OVERRIDE",
                             "FOWNER",

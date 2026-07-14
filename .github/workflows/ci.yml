@@ -159,8 +159,4 @@ jobs:
           go install sigs.k8s.io/kind@v0.31.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Run full lifecycle E2E
-        env:
-          # GitHub-hosted runners cannot retain an SSH PTY through Kind's port-forward.
-          # The workspace image job above exercises the same shell with a real TTY.
-          DEVBOXES_E2E_INTERACTIVE_SSH: "0"
         run: scripts/kind-e2e.sh
