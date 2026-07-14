@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
     <title>Sign in · Devboxes</title>
-    <link rel="icon" href="/static/favicon.svg?v=0.1.2" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/styles.css?v=0.1.2">
+    <link rel="icon" href="/static/favicon.svg?v=0.2.0" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/styles.css?v=0.2.0">
   </head>
   <body class="login-page">
     <main class="login-shell">
@@ -35,6 +35,7 @@
           <p>Use the access token your cluster operator created during installation.</p>
         </div>
         <form action="/auth/login" method="post" class="login-form">
+          <input type="hidden" name="next" value="{{ next_target }}">
           <label for="token">Access token</label>
           <input
             id="token"

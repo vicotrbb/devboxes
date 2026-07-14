@@ -35,13 +35,19 @@ The controller needs namespaced access to Deployments, Services, Pods, and PVCs.
 
 ## Authentication fails
 
-For `401 Authentication required`, confirm the CLI profile URL and token:
+For `401 Authentication required`, repeat browser authorization for the profile:
 
 ```bash
 DEVBOX_CONFIG=/path/to/profile.toml devbox login --url https://devboxes.example.com
 ```
 
 If the controller Secret changed, restart the controller and log in again. Existing sessions are signed with the old token and become invalid.
+
+If authorization times out, confirm the CLI is still running, the browser reached the same
+controller URL, and the callback uses the exact `http://127.0.0.1:PORT/callback` shown in the
+authorization request. Use `--no-open` when a browser launcher is unavailable. A denial is
+intentional and issues no token; restart `devbox login` to make a new request. Never copy a
+master token into terminal output as a workaround.
 
 For browser `403 Missing or invalid CSRF token`, clear the site cookies and log in again. Confirm that an HTTPS installation sets `controller.cookieSecure=true`. A secure cookie is not sent over plain HTTP.
 
@@ -98,6 +104,22 @@ ssh -vvv -p SSH_PORT dev@SSH_HOST
 Check the Service endpoints, firewall rules, load-balancer health, `externalTrafficPolicy`, and pod readiness. With `externalTrafficPolicy: Local`, the load balancer must route only to the node that currently hosts the workspace pod.
 
 If OpenSSH reports a host-key change after an intentional purge, remove only the alias named in the error from `known_hosts`. An unexpected host-key change without a purge should be investigated before connecting.
+
+## SSH closes after authentication
+
+If public-key authentication succeeds but the connection closes with
+`missing or unsuitable terminal`, verify the workspace image matches the current release:
+
+```bash
+devbox status atlas
+kubectl get deployment devbox-atlas -n devboxes \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+```
+
+Current images install broad ncurses terminfo plus the pinned Ghostty
+`xterm-ghostty` entry. `devbox-shell` preserves an installed, safe `TERM`; otherwise it
+chooses `xterm-256color`, `screen-256color`, `xterm`, or `vt100` and prints one sanitized
+warning. Do not disable host-key checking or remove an SSH-key passphrase for this error.
 
 ## Repository clone fails
 

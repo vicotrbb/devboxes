@@ -77,6 +77,19 @@ spec:
               value: {{ .Values.controller.cleanupIntervalSeconds | quote }}
             - name: DEVBOXES_SESSION_TTL_SECONDS
               value: {{ .Values.controller.sessionTtlSeconds | quote }}
+            - name: DEVBOXES_AUTHORIZATION_CODE_TTL_SECONDS
+              value: {{ int .Values.controller.authorizationCodeTtlSeconds | quote }}
+            - name: DEVBOXES_AUTHORIZATION_CODE_STORE_SIZE
+              value: {{ int .Values.controller.authorizationCodeStoreSize | quote }}
+            - name: DEVBOXES_CLI_TOKEN_TTL_SECONDS
+              value: {{ int .Values.controller.cliTokenTtlSeconds | quote }}
+            {{- if .Values.controller.cliSigningKeyKey }}
+            - name: DEVBOXES_CLI_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controller.existingSecret }}
+                  key: {{ .Values.controller.cliSigningKeyKey }}
+            {{- end }}
             - name: DEVBOXES_LOG_LEVEL
               value: {{ .Values.controller.logLevel | quote }}
             - name: DEVBOXES_WORKSPACE_IMAGE

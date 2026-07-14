@@ -1,5 +1,6 @@
 mod client;
 mod config;
+mod login;
 mod models;
 
 use std::io::{self, Write};
@@ -42,7 +43,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Store and verify API credentials.
-    Login,
+    Login(LoginArgs),
     /// Create a prepared devbox.
     Create(CreateArgs),
     /// List current devboxes.
@@ -57,6 +58,17 @@ enum Commands {
     Stop(NameArgs),
     /// Delete compute and optionally purge the home volume.
     Delete(DeleteArgs),
+}
+
+#[derive(Args)]
+struct LoginArgs {
+    /// Print the authorization URL without opening a browser.
+    #[arg(long)]
+    no_open: bool,
+
+    /// Seconds to wait for browser authorization.
+    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(10..=900))]
+    timeout: u64,
 }
 
 #[derive(Args)]
@@ -117,8 +129,8 @@ struct DeleteArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    if matches!(&cli.command, Commands::Login) {
-        return login(cli.url.as_deref(), cli.token.as_deref()).await;
+    if let Commands::Login(args) = &cli.command {
+        return login(cli.url.as_deref(), cli.token.as_deref(), args, cli.json).await;
     }
 
     let resolved = StoredConfig::load()?.resolve(cli.url.clone(), cli.token.clone())?;
@@ -126,7 +138,7 @@ async fn main() -> Result<()> {
     let client = ApiClient::new(resolved.url, resolved.token)?;
 
     match cli.command {
-        Commands::Login => unreachable!(),
+        Commands::Login(_) => unreachable!(),
         Commands::Create(args) => create(&client, args, cli.json, &server_alias).await,
         Commands::List => list(&client, cli.json).await,
         Commands::Status(args) => status(&client, &args.name, cli.json).await,
@@ -137,7 +149,12 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn login(url: Option<&str>, provided_token: Option<&str>) -> Result<()> {
+async fn login(
+    url: Option<&str>,
+    provided_token: Option<&str>,
+    args: &LoginArgs,
+    json: bool,
+) -> Result<()> {
     let stored = StoredConfig::load()?;
     let configured_url = url
         .map(str::to_owned)
@@ -149,9 +166,32 @@ async fn login(url: Option<&str>, provided_token: Option<&str>) -> Result<()> {
                 "Devboxes API URL is not configured; pass `--url https://devboxes.example.com` or set DEVBOX_URL"
             )
         })?;
-    let token = match resolve_login_token(provided_token, std::env::var("DEVBOX_TOKEN").ok()) {
-        Some(token) => token,
-        None => rpassword::prompt_password("Devboxes access token: ")?,
+    let configured_url = stored.resolve_url(Some(configured_url))?;
+    let token = if let Some(token) =
+        resolve_login_token(provided_token, std::env::var("DEVBOX_TOKEN").ok())
+    {
+        token
+    } else {
+        let authorization = login::authorize(
+            &configured_url,
+            Duration::from_secs(args.timeout),
+            args.no_open,
+        )
+        .await?;
+        let response = ApiClient::exchange_cli_code(
+            &configured_url,
+            &authorization.code,
+            &authorization.code_verifier,
+            &authorization.redirect_uri,
+        )
+        .await?;
+        if response.token_type != "Bearer"
+            || response.scope != "devboxes:manage"
+            || response.expires_in == 0
+        {
+            bail!("Devboxes API returned an unsupported CLI token");
+        }
+        response.access_token
     };
     let resolved = stored.resolve(Some(configured_url), Some(token.clone()))?;
     let identity = ApiClient::new(resolved.url.clone(), resolved.token)?
@@ -159,12 +199,23 @@ async fn login(url: Option<&str>, provided_token: Option<&str>) -> Result<()> {
         .await
         .context("token verification failed")?;
     let path = StoredConfig::save(&resolved.url, &token)?;
-    println!(
-        "✓ authenticated as {} via {}\n  config: {}",
-        identity.user,
-        identity.mode,
-        path.display()
-    );
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "user": identity.user,
+                "mode": identity.mode,
+                "config": path,
+            })
+        );
+    } else {
+        println!(
+            "✓ authenticated as {} via {}\n  config: {}",
+            identity.user,
+            identity.mode,
+            path.display()
+        );
+    }
     Ok(())
 }
 

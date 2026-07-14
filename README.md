@@ -84,7 +84,7 @@ kubectl -n devboxes create secret generic devboxes-workspace \
   --from-file=SSH_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub"
 
 helm install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
-  --version 0.1.2 \
+  --version 0.2.0 \
   --namespace devboxes
 ```
 
@@ -155,6 +155,18 @@ devbox login --url https://devboxes.example.com
 devbox create atlas --preset medium --ttl 24 --repo owner/project --ssh
 ```
 
+Login opens the system browser, asks the current Devboxes browser session to approve the
+CLI, exchanges a one-time PKCE authorization code, verifies the resulting scoped token,
+and stores it without displaying it. If the browser is not already signed in, the existing
+operator login page appears first. This removes token pasting from the terminal; it does
+not add SSO or unauthenticated LAN trust.
+
+For a machine where the CLI cannot open a browser, print the URL and open it manually:
+
+```bash
+devbox login --url https://devboxes.example.com --no-open
+```
+
 For a port-forwarded controller, localhost HTTP is deliberately allowed:
 
 ```bash
@@ -180,6 +192,10 @@ devbox ssh atlas -- -L 3000:127.0.0.1:3000
 ```
 
 The CLI stores its configuration at the platform config directory under `devbox/config.toml` with mode `0600` on Unix. `DEVBOX_URL`, `DEVBOX_TOKEN`, and `DEVBOX_CONFIG` support non-interactive and multi-profile workflows.
+
+Existing automation can continue to use the master token through `DEVBOX_TOKEN` or an
+explicit `--token`. Browser login receives an expiring CLI token instead of the master
+credential.
 
 ## Credentials and prepared accounts
 

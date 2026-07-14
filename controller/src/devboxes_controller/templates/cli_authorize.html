@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Authorize Devbox CLI · Devboxes</title>
+    <link rel="icon" href="/static/favicon.svg?v=0.2.0" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/styles.css?v=0.2.0">
+  </head>
+  <body class="login-page">
+    <main class="authorization-shell" aria-labelledby="authorization-title">
+      <header class="authorization-header">
+        <a class="wordmark" href="/" aria-label="Devboxes home">
+          <span class="wordmark-mark" aria-hidden="true">db</span>
+          <span>devboxes</span>
+        </a>
+        <span class="authorization-cluster">{{ cluster_name }}</span>
+      </header>
+
+      <section class="authorization-content">
+        <div class="authorization-intro">
+          <p class="context-line">Command-line authorization</p>
+          <h1 id="authorization-title">Allow the Devbox CLI to access this installation?</h1>
+          <p>
+            A local Devbox CLI is waiting for your decision. Approval creates a scoped,
+            expiring token for <strong>{{ display_name }}</strong>; it does not reveal or copy
+            the operator access token.
+          </p>
+        </div>
+
+        <dl class="authorization-facts">
+          <div>
+            <dt>Application</dt>
+            <dd>Devbox CLI</dd>
+          </div>
+          <div>
+            <dt>Access</dt>
+            <dd>Create and manage devboxes as the current operator</dd>
+          </div>
+          <div>
+            <dt>Return address</dt>
+            <dd><code>{{ authorization.redirect_uri }}</code></dd>
+          </div>
+        </dl>
+
+        <p class="authorization-note">
+          Only approve if you started <code>devbox login</code> on this computer. Denying
+          returns a refusal to the waiting CLI and issues no token.
+        </p>
+
+        <form action="/auth/cli/authorize" method="post" class="authorization-actions">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="response_type" value="{{ authorization.response_type }}">
+          <input type="hidden" name="client_id" value="{{ authorization.client_id }}">
+          <input type="hidden" name="redirect_uri" value="{{ authorization.redirect_uri }}">
+          <input type="hidden" name="state" value="{{ authorization.state }}">
+          <input type="hidden" name="code_challenge" value="{{ authorization.code_challenge }}">
+          <input type="hidden" name="code_challenge_method" value="{{ authorization.code_challenge_method }}">
+          <button class="button button-secondary" type="submit" name="action" value="deny">
+            Deny
+          </button>
+          <button class="button button-primary" type="submit" name="action" value="approve" autofocus>
+            Approve Devbox CLI
+          </button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

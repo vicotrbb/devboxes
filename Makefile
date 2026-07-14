@@ -9,7 +9,8 @@ lint:
 	npm run lint
 	cd controller && uv run ruff format --check . && uv run ruff check . && uv run mypy
 	cd cli && cargo fmt --check && cargo clippy --all-targets --all-features --locked -- -D warnings
-	shellcheck scripts/*.sh workspace/*.sh workspace/devbox-shell
+	shellcheck scripts/*.sh workspace/*.sh workspace/devbox-shell workspace/tests/*.sh
+	workspace/tests/test-devbox-shell.sh
 	./scripts/check-version.sh
 
 test:
@@ -24,6 +25,7 @@ helm:
 images:
 	docker build --tag devboxes-controller:local controller
 	docker build --tag devboxes-workspace:local workspace
+	workspace/tests/test-image-terminal.sh devboxes-workspace:local
 
 clean:
 	rm -rf node_modules controller/.venv controller/.mypy_cache controller/.pytest_cache controller/.ruff_cache controller/.coverage controller/htmlcov cli/target

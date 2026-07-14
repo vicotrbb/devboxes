@@ -11,7 +11,15 @@ kubectl -n devboxes create secret generic devboxes-auth \
   --from-literal=access-token="$(openssl rand -hex 32)"
 ```
 
-Rotating this Secret invalidates saved CLI tokens after the controller pod restarts. Existing browser sessions also become invalid because session signatures derive from the access token.
+By default, rotating this Secret invalidates saved CLI tokens after the controller pod
+restarts. Existing browser sessions also become invalid because session signatures derive
+from the access token.
+
+An installation may add a dedicated signing key to the same Secret and set
+`controller.cliSigningKeyKey` to that field. This separates CLI-token rotation from browser
+session rotation without adding another Secret. The key is optional and must contain at
+least 32 strong random characters. Rotating whichever effective signing key is configured
+revokes all issued CLI tokens.
 
 ## Workspace Secret
 

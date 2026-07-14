@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub struct StoredConfig {
     pub url: Option<String>,
     pub token: Option<String>,
@@ -32,21 +32,32 @@ impl StoredConfig {
     }
 
     pub fn resolve(self, url: Option<String>, token: Option<String>) -> Result<ResolvedConfig> {
-        let url = url
-            .or_else(|| std::env::var("DEVBOX_URL").ok())
-            .or(self.url)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Devboxes API URL is not configured; run `devbox login --url https://devboxes.example.com` or set DEVBOX_URL"
-                )
-            })?;
+        let resolved_url = self.resolve_url(url)?;
         let token = token
             .or_else(|| std::env::var("DEVBOX_TOKEN").ok())
             .or(self.token)
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| {
                 anyhow::anyhow!("not logged in; run `devbox login` or set DEVBOX_TOKEN")
+            })?;
+        let parsed = Url::parse(&resolved_url).context("invalid Devboxes API URL")?;
+        let server_alias = server_alias(&parsed);
+        Ok(ResolvedConfig {
+            url: resolved_url,
+            token,
+            server_alias,
+        })
+    }
+
+    pub fn resolve_url(&self, url: Option<String>) -> Result<String> {
+        let url = url
+            .or_else(|| std::env::var("DEVBOX_URL").ok())
+            .or_else(|| self.url.clone())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Devboxes API URL is not configured; run `devbox login --url https://devboxes.example.com` or set DEVBOX_URL"
+                )
             })?;
         let parsed = Url::parse(&url).context("invalid Devboxes API URL")?;
         let local_http = parsed.scheme() == "http"
@@ -60,12 +71,7 @@ impl StoredConfig {
         if parsed.query().is_some() || parsed.fragment().is_some() {
             bail!("the Devboxes API URL must not contain a query string or fragment");
         }
-        let server_alias = server_alias(&parsed);
-        Ok(ResolvedConfig {
-            url: url.trim_end_matches('/').to_owned(),
-            token,
-            server_alias,
-        })
+        Ok(url.trim_end_matches('/').to_owned())
     }
 
     pub fn save(url: &str, token: &str) -> Result<PathBuf> {

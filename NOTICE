@@ -2,3 +2,7 @@ Devboxes
 Copyright 2026 Victor Bona
 
 This product includes software developed by Devboxes contributors.
+
+The workspace image includes a generated Ghostty terminfo entry derived from Ghostty,
+Copyright (c) 2024 Mitchell Hashimoto and Ghostty contributors, licensed under the MIT
+License. The pinned source provenance and license are under workspace/terminfo.

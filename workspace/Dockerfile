@@ -37,6 +37,9 @@ RUN apt-get update \
       libssl-dev \
       locales \
       nano \
+      ncurses-base \
+      ncurses-bin \
+      ncurses-term \
       openssh-client \
       openssh-server \
       pkg-config \
@@ -76,6 +79,16 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && printf 'dev ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/dev \
     && chmod 0440 /etc/sudoers.d/dev \
     && mkdir -p /etc/devbox/skel /run/sshd
+
+COPY --chmod=0644 terminfo/ghostty.terminfo /usr/local/share/devboxes/ghostty.terminfo
+COPY --chmod=0644 terminfo/LICENSE.ghostty /usr/local/share/licenses/ghostty/LICENSE
+COPY --chmod=0644 terminfo/README.md /usr/local/share/doc/devboxes/ghostty-terminfo.md
+
+RUN tic -x -o /usr/share/terminfo /usr/local/share/devboxes/ghostty.terminfo \
+    && infocmp -x xterm-ghostty >/dev/null \
+    && infocmp xterm-256color >/dev/null \
+    && infocmp screen-256color >/dev/null \
+    && infocmp tmux-256color >/dev/null
 
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/devbox-entrypoint
 COPY --chmod=0755 devbox-shell /usr/local/bin/devbox-shell

@@ -4,14 +4,17 @@ The controller exposes a small JSON API under `/api/v1`. The Rust CLI is the ref
 
 ## Authentication
 
-CLI and automation requests use the shared controller token:
+Automation requests may use the master controller token. Browser-authorized CLI requests
+use a scoped, expiring token with the same bearer header:
 
 ```http
 Authorization: Bearer CONTROLLER_ACCESS_TOKEN
 Accept: application/json
 ```
 
-Browser login exchanges the token for an HTTP-only, SameSite `devboxes_session` cookie and a readable `devboxes_csrf` cookie. Every browser mutation sends the CSRF value in `X-Devboxes-CSRF`. API clients using bearer authentication do not need a CSRF header.
+Browser login exchanges the master token for an HTTP-only, SameSite `devboxes_session`
+cookie and a readable `devboxes_csrf` cookie. Every browser mutation sends the CSRF value
+in `X-Devboxes-CSRF`. API clients using bearer authentication do not need a CSRF header.
 
 The shared token controls every devbox in the installation, including permanent purge. Do not expose it in URLs, shell history, logs, or source control.
 
@@ -22,6 +25,9 @@ The shared token controls every devbox in the installation, including permanent 
 | `GET` | `/health` | 200 | Process liveness |
 | `GET` | `/ready` | 200 or 503 | Kubernetes API readiness |
 | `GET` | `/metrics` | 200 | Prometheus metrics |
+| `GET` | `/auth/cli/authorize` | 200 or 303 | Show approval or return through browser login |
+| `POST` | `/auth/cli/authorize` | 303 | Approve or deny a CSRF-protected CLI request |
+| `POST` | `/api/v1/auth/cli/token` | 200 | Exchange a one-time code and PKCE verifier |
 | `GET` | `/api/v1/whoami` | 200 | Verify authentication and identity |
 | `GET` | `/api/v1/devboxes` | 200 | List managed devboxes |
 | `POST` | `/api/v1/devboxes` | 201 | Create a devbox |
@@ -31,6 +37,13 @@ The shared token controls every devbox in the installation, including permanent 
 | `DELETE` | `/api/v1/devboxes/{name}` | 200 | Delete compute, optionally purge storage |
 
 The list endpoint is not paginated. One installation is intended for a small, trusted operator scope.
+
+The CLI authorization route accepts only `client_id=devbox-cli`, an exact numeric HTTP
+loopback redirect ending in `/callback`, a high-entropy state, a PKCE challenge, and
+`code_challenge_method=S256`. Approval binds the opaque code to all of those values and the
+browser subject for about two minutes. The token endpoint accepts JSON fields
+`grant_type`, `code`, `code_verifier`, `client_id`, and `redirect_uri`. Errors are generic,
+responses are `no-store`, codes are single-use, and no refresh token is returned.
 
 ## Create a devbox
 
