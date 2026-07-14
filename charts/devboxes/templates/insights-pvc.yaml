@@ -1,0 +1,23 @@
+{{- if and .Values.insights.enabled (not .Values.insights.storage.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "devboxes.insightsClaimName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "devboxes.labels" . | nindent 4 }}
+    app.kubernetes.io/component: insights
+  {{- if .Values.insights.storage.retainOnDelete }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes:
+    - {{ .Values.insights.storage.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.insights.storage.size }}
+  {{- with .Values.insights.storage.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

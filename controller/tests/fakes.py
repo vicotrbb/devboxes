@@ -91,3 +91,6 @@ class FakeManager:
 
     async def stop_expired(self) -> list[str]:
         return []
+
+    async def reconcile_insights(self) -> list[str]:
+        return []

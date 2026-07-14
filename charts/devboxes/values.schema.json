@@ -76,6 +76,49 @@
         }
       }
     },
+    "insights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "signingKeyKey", "storage", "retention", "agent"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "signingKeyKey": {"type": "string"},
+        "storage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["existingClaim", "storageClass", "size", "warningBytes", "accessMode", "retainOnDelete"],
+          "properties": {
+            "existingClaim": {"type": "string"},
+            "storageClass": {"type": "string"},
+            "size": {"type": "string", "pattern": "^[1-9][0-9]*(?:Mi|Gi|Ti)$"},
+            "warningBytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776},
+            "accessMode": {"type": "string", "enum": ["ReadWriteOnce", "ReadWriteOncePod"]},
+            "retainOnDelete": {"type": "boolean"}
+          }
+        },
+        "retention": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rawDays", "hourlyDays", "dailyDays"],
+          "properties": {
+            "rawDays": {"type": "integer", "minimum": 1, "maximum": 365},
+            "hourlyDays": {"type": "integer", "minimum": 1, "maximum": 730},
+            "dailyDays": {"type": "integer", "minimum": 1, "maximum": 3650}
+          }
+        },
+        "agent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scanIntervalSeconds", "repositoryDepth", "maxQueueBytes", "maxQueueAgeSeconds"],
+          "properties": {
+            "scanIntervalSeconds": {"type": "integer", "minimum": 15, "maximum": 3600},
+            "repositoryDepth": {"type": "integer", "minimum": 1, "maximum": 12},
+            "maxQueueBytes": {"type": "integer", "minimum": 1048576, "maximum": 2147483648},
+            "maxQueueAgeSeconds": {"type": "integer", "minimum": 60, "maximum": 31536000}
+          }
+        }
+      }
+    },
     "service": {
       "type": "object",
       "additionalProperties": false,

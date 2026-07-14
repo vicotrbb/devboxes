@@ -20,8 +20,8 @@ Each workspace includes Rust, Node.js, Python, `uv`, GitHub CLI, Codex CLI, Clau
 
 ## What ships
 
-- A Rust `devbox` CLI for create, list, inspect, SSH, start, stop, and delete workflows.
-- A FastAPI controller with an authenticated API, accessible browser workbench, documentation, metrics, health checks, and TTL cleanup.
+- A Rust `devbox` CLI for create, list, inspect, SSH, start, stop, delete, and opt-in Insights workflows.
+- A FastAPI controller with an authenticated API, accessible browser workbench, Insights dashboard, documentation, metrics, health checks, and TTL cleanup.
 - A versioned Helm chart with values schema validation and namespace-scoped RBAC.
 - Multi-architecture controller and workspace images for `linux/amd64` and `linux/arm64`.
 - Persistent SSH host identity, shell state, tool installs, account state, and source under `/home/dev`.
@@ -84,7 +84,7 @@ kubectl -n devboxes create secret generic devboxes-workspace \
   --from-file=SSH_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub"
 
 helm install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
-  --version 0.2.1 \
+  --version 0.3.0 \
   --namespace devboxes
 ```
 
@@ -131,6 +131,31 @@ For clusters without a load balancer, let Kubernetes allocate a distinct NodePor
 ```
 
 See [configuration](docs/configuration.md) for every supported value and platform examples.
+
+### Enable Insights
+
+Insights is disabled by default. Enable it to collect privacy-bounded local AI metrics and aggregate Git activity into a persistent controller database:
+
+```yaml
+insights:
+  enabled: true
+  storage:
+    storageClass: fast-rwo
+    size: 2Gi
+    retainOnDelete: true
+```
+
+New and normally restarted workspaces receive a loopback-only collector sidecar. The collector uses a durable outbox on the workspace PVC and a scoped write-only credential. It never collects prompts, responses, commands, paths, file contents, Git authors, commit messages, or provider identities.
+
+Open `/insights` or query the same data through the CLI:
+
+```bash
+devbox metrics --since 7d
+devbox metrics status
+devbox metrics activity --box atlas
+```
+
+Insights is personal operational visibility, not billing, compliance, employee monitoring, or a productivity score. Read [Insights](docs/insights.md) before enabling it for metric semantics, trust boundaries, storage, backup, retention, and purge behavior.
 
 ## Install and use the CLI
 
@@ -221,11 +246,12 @@ devbox CLI / browser
           ▼
 Devboxes controller ─── Kubernetes API
           │                  │
+          │                  ├─ Secret (scoped Insights ingest credential)
           │                  ├─ Deployment (disposable compute)
           │                  ├─ Service (LoadBalancer or NodePort SSH)
           │                  └─ PVC (persistent /home/dev)
-          ▼
-  TTL cleanup and lifecycle state
+          ├─ TTL cleanup and lifecycle state
+          └─ Insights SQLite PVC (optional central history)
 ```
 
 The controller watches only its release namespace and receives namespace-scoped RBAC. Workspace pods do not receive Kubernetes service-account tokens. See [architecture](docs/architecture.md) for resource ownership, persistence, readiness, and threat boundaries.
@@ -248,13 +274,14 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change. Security repo
 
 - [Golden path](docs/golden-path.md) for a performance-oriented installation and daily workflow.
 - [CLI reference](docs/cli.md) and [API reference](docs/api.md) for client contracts.
+- [Insights](docs/insights.md) for telemetry semantics, privacy, storage, backup, and purge.
 - [Configuration](docs/configuration.md) and [credentials](docs/credentials.md) for installation details.
 - [Operations](docs/operations.md) and [troubleshooting](docs/troubleshooting.md) for production ownership.
 - [Architecture](docs/architecture.md) and [development](docs/development.md) for maintainers.
 
 ## Project status
 
-Devboxes is at `v0.1`: useful and installable, with an intentionally narrow trust model. Compatibility follows semantic versioning after `v1.0`; before then, minor releases may include documented configuration or API changes. PVC data is never automatically deleted, including at TTL expiry.
+Devboxes is at `v0.3`: useful and installable, with an intentionally narrow trust model. Compatibility follows semantic versioning after `v1.0`; before then, minor releases may include documented configuration or API changes. PVC data is never automatically deleted, including at TTL expiry.
 
 ## License
 

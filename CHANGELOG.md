@@ -4,6 +4,29 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-14
+
+### Added
+
+- Added opt-in Devboxes Insights with local Codex and Claude telemetry ingestion, aggregate Git activity, durable workspace outboxes, and a persistent SQLite history store.
+- Added an authenticated, responsive Insights dashboard plus CLI summary, collector status, recent activity, CSV/JSON export, and explicit purge workflows.
+- Added Helm configuration, schema validation, retained central storage, scoped per-workspace ingest Secrets, workspace sidecars, backups, retention, and operational documentation for Insights.
+
+### Changed
+
+- Assigned every workspace a stable Insights instance identifier while leaving active legacy workspaces running and reporting that a normal restart is required to enable collection.
+- Expanded the Kind and release gates to prove provider-shaped ingestion, replay deduplication, Git baselines, controller and workspace restarts, retained history, backups, SSH, and explicit purge behavior.
+
+### Fixed
+
+- Made the Insights agent create its private outbox path before privilege drop, bind its loopback receiver before background work begins, and retry recoverable startup failures.
+- Preserved integer token totals across the SQLite API boundary and removed narrow-screen activity-list overflow from the dashboard.
+
+### Security
+
+- Added independent workspace and controller allowlists that reject prompts, responses, logs, commands, paths, Git identities, commit messages, and provider identity attributes before persistence.
+- Added scoped HMAC ingest credentials with write-only routes and kept controller and master access tokens out of workspace Deployments.
+
 ## [0.2.1] - 2026-07-13
 
 ### Fixed
@@ -67,7 +90,8 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 - Portable Helm chart with values schema, namespace-scoped RBAC, configurable storage, ingress, LoadBalancer or NodePort SSH, ServiceMonitor, and disruption budget.
 - macOS and Linux CLI releases, SHA-256 verification installer, GHCR images, OCI chart publishing, image provenance attestations, and clean Kind install CI.
 
-[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/vicotrbb/devboxes/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/vicotrbb/devboxes/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vicotrbb/devboxes/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/vicotrbb/devboxes/compare/v0.1.1...v0.1.2

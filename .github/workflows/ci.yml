@@ -105,8 +105,8 @@ jobs:
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
           "$(go env GOPATH)/bin/gitleaks" detect --source . --no-git --redact --no-banner
-      - name: Helm lint
-        run: helm lint charts/devboxes --strict
+      - name: Helm Insights contracts
+        run: scripts/test-helm-insights.sh
       - name: Render LoadBalancer installation
         run: helm template devboxes charts/devboxes --namespace devboxes > /tmp/devboxes.yaml
       - name: Validate Kubernetes resources
@@ -158,5 +158,9 @@ jobs:
         run: |
           go install sigs.k8s.io/kind@v0.31.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Build CLI for end-to-end verification
+        run: cargo build --manifest-path cli/Cargo.toml --locked
       - name: Run full lifecycle E2E
         run: scripts/kind-e2e.sh
+        env:
+          DEVBOXES_E2E_CLI: cli/target/debug/devbox

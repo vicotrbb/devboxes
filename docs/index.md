@@ -13,6 +13,7 @@ Devboxes turns Kubernetes capacity into persistent, SSH-accessible development e
 
 - [CLI reference](cli.md), commands, global flags, environment variables, output, and SSH forwarding.
 - [API reference](api.md), authentication, endpoints, request and response contracts, and errors.
+- [Insights](insights.md), opt-in AI telemetry, aggregate Git activity, privacy boundaries, retention, backup, and purge.
 - The authenticated `/docs` page in a running controller, an operator-focused guide rendered with installation-specific values.
 
 ## Operate Devboxes

@@ -177,9 +177,44 @@ devbox delete atlas --purge --yes
 
 Use `--yes` only in automation where permanent data deletion is intended.
 
+### `devbox metrics`
+
+Query opt-in Insights data without opening the dashboard. The default command prints a seven-day summary:
+
+```bash
+devbox metrics
+devbox metrics --since 24h --box atlas --provider claude
+devbox metrics --since 30d --group-by model --json
+```
+
+Filters may appear before or after a metrics subcommand:
+
+| Option | Meaning |
+| --- | --- |
+| `--since RANGE` | Relative `24h`, `7d`, or `30d` range, or an RFC 3339 timestamp; default `7d` |
+| `--until TIME` | Inclusive RFC 3339 range end; default is now |
+| `--box NAME` | Restrict to one devbox name |
+| `--provider codex\|claude\|all` | Restrict AI telemetry by provider |
+| `--model MODEL` | Restrict to one provider-reported model |
+| `--repo REPOSITORY` | Restrict Git aggregates to one normalized repository identifier |
+| `--group-by provider\|model\|box\|repository` | Return one supported grouping dimension |
+
+Use the subcommands for collector health, aggregate Git events, stable exports, and explicit deletion:
+
+```bash
+devbox metrics status --box atlas
+devbox metrics activity --since 7d --limit 50
+devbox metrics export --since 30d --format json > insights.json
+devbox metrics export --since 30d --format csv > insights.csv
+devbox metrics purge --box atlas
+devbox metrics purge --box atlas --yes
+```
+
+JSON preserves nullable measurements and response metadata. CSV prefixes spreadsheet formula characters before writing cells. Purge permanently removes central Insights history for every retained instance of the selected box, but it does not delete workspace storage.
+
 ## Output and scripting
 
-Human-readable results go to stdout. Progress and connection-wait messages go to stderr. Failures return a nonzero exit status. `--json` emits formatted JSON for list, status, create, start, and stop workflows, which can be consumed with `jq`:
+Human-readable results go to stdout. Progress and connection-wait messages go to stderr. Failures return a nonzero exit status. `--json` emits formatted JSON for list, status, create, start, stop, and metrics workflows, which can be consumed with `jq`:
 
 ```bash
 devbox list --json | jq -r '.[] | select(.state == "ready") | .name'

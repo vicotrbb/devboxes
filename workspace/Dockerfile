@@ -92,11 +92,16 @@ RUN tic -x -o /usr/share/terminfo /usr/local/share/devboxes/ghostty.terminfo \
 
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/devbox-entrypoint
 COPY --chmod=0755 devbox-shell /usr/local/bin/devbox-shell
+COPY --chmod=0555 insights_agent.py /usr/local/bin/devbox-insights-agent
+COPY --chmod=0444 codex-insights.toml /usr/local/share/devboxes/codex-insights.toml
 COPY --chmod=0644 devbox-secrets.sh /etc/profile.d/devbox-secrets.sh
 COPY --chmod=0644 sshd_config /etc/ssh/sshd_config_devbox
 COPY --chmod=0644 bashrc /etc/devbox/skel/.bashrc
 COPY --chmod=0644 zshrc /etc/devbox/skel/.zshrc
 COPY --chmod=0644 tmux.conf /etc/devbox/skel/.tmux.conf
+
+RUN python3 -m py_compile /usr/local/bin/devbox-insights-agent \
+    && rm -rf /usr/local/bin/__pycache__
 
 EXPOSE 2222
 ENTRYPOINT ["/usr/local/bin/devbox-entrypoint"]

@@ -1,3 +1,6 @@
+{{- if and .Values.insights.enabled (ne (int .Values.controller.replicaCount) 1) }}
+{{- fail "controller.replicaCount must be exactly 1 when insights.enabled=true" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,7 +12,11 @@ metadata:
 spec:
   replicas: {{ .Values.controller.replicaCount }}
   strategy:
+    {{- if .Values.insights.enabled }}
+    type: Recreate
+    {{- else }}
     type: RollingUpdate
+    {{- end }}
   selector:
     matchLabels:
       {{- include "devboxes.selectorLabels" . | nindent 6 }}
@@ -92,6 +99,37 @@ spec:
             {{- end }}
             - name: DEVBOXES_LOG_LEVEL
               value: {{ .Values.controller.logLevel | quote }}
+            - name: DEVBOXES_INSIGHTS_ENABLED
+              value: {{ .Values.insights.enabled | quote }}
+            {{- if .Values.insights.enabled }}
+            - name: DEVBOXES_INSIGHTS_DB_PATH
+              value: /var/lib/devboxes/insights.db
+            - name: DEVBOXES_INSIGHTS_DATABASE_WARNING_BYTES
+              value: {{ int .Values.insights.storage.warningBytes | quote }}
+            - name: DEVBOXES_INSIGHTS_CONTROLLER_URL
+              value: {{ printf "http://%s:%v" (include "devboxes.fullname" .) .Values.service.port | quote }}
+            - name: DEVBOXES_INSIGHTS_RETENTION_RAW_DAYS
+              value: {{ int .Values.insights.retention.rawDays | quote }}
+            - name: DEVBOXES_INSIGHTS_RETENTION_HOURLY_DAYS
+              value: {{ int .Values.insights.retention.hourlyDays | quote }}
+            - name: DEVBOXES_INSIGHTS_RETENTION_DAILY_DAYS
+              value: {{ int .Values.insights.retention.dailyDays | quote }}
+            - name: DEVBOXES_INSIGHTS_AGENT_SCAN_INTERVAL_SECONDS
+              value: {{ int .Values.insights.agent.scanIntervalSeconds | quote }}
+            - name: DEVBOXES_INSIGHTS_AGENT_REPOSITORY_DEPTH
+              value: {{ int .Values.insights.agent.repositoryDepth | quote }}
+            - name: DEVBOXES_INSIGHTS_AGENT_MAX_QUEUE_BYTES
+              value: {{ int .Values.insights.agent.maxQueueBytes | quote }}
+            - name: DEVBOXES_INSIGHTS_AGENT_MAX_QUEUE_AGE_SECONDS
+              value: {{ int .Values.insights.agent.maxQueueAgeSeconds | quote }}
+            {{- if .Values.insights.signingKeyKey }}
+            - name: DEVBOXES_INSIGHTS_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controller.existingSecret }}
+                  key: {{ .Values.insights.signingKeyKey }}
+            {{- end }}
+            {{- end }}
             - name: DEVBOXES_WORKSPACE_IMAGE
               value: {{ include "devboxes.workspaceImage" . | quote }}
             - name: DEVBOXES_WORKSPACE_SECRET_NAME
@@ -137,9 +175,18 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.insights.enabled }}
+            - name: insights
+              mountPath: /var/lib/devboxes
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.insights.enabled }}
+        - name: insights
+          persistentVolumeClaim:
+            claimName: {{ include "devboxes.insightsClaimName" . }}
+        {{- end }}
       {{- with .Values.controller.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

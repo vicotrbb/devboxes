@@ -8,6 +8,7 @@ bootstrap:
 lint:
 	npm run lint
 	cd controller && uv run ruff format --check . && uv run ruff check . && uv run mypy
+	cd controller && uv run ruff format --check ../workspace/insights_agent.py && uv run ruff check ../workspace/insights_agent.py
 	cd cli && cargo fmt --check && cargo clippy --all-targets --all-features --locked -- -D warnings
 	shellcheck scripts/*.sh workspace/*.sh workspace/devbox-shell workspace/tests/*.sh
 	workspace/tests/test-devbox-shell.sh
@@ -18,8 +19,7 @@ test:
 	cd cli && cargo test --all-features --locked
 
 helm:
-	helm lint charts/devboxes --strict
-	helm template devboxes charts/devboxes --namespace devboxes >/dev/null
+	scripts/test-helm-insights.sh
 	helm template devboxes charts/devboxes --namespace devboxes --set workspace.sshService.type=NodePort --set workspace.sshService.host=192.0.2.10 >/dev/null
 
 images:

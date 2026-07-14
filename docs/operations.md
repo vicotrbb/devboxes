@@ -12,11 +12,11 @@ kubectl logs deployment/devboxes -n devboxes --tail=200
 ./scripts/verify-install.sh
 ```
 
-`/health` proves that the HTTP process responds. `/ready` performs a namespaced Deployment list against the Kubernetes API and returns 503 when that dependency is unavailable. Neither endpoint creates resources.
+`/health` proves that the HTTP process responds. `/ready` performs a namespaced Deployment list against the Kubernetes API and, when enabled, verifies the Insights database. It returns 503 when either required dependency is unavailable. Neither endpoint creates resources.
 
 ## Metrics and logs
 
-`/metrics` exposes `devboxes_total{state=...}` for `starting`, `ready`, `stopped`, and `degraded` boxes. Enable the chart ServiceMonitor only when Prometheus Operator CRDs already exist:
+`/metrics` exposes `devboxes_total{state=...}` for `starting`, `ready`, `stopped`, and `degraded` boxes. When Insights is enabled it also exposes low-cardinality ingest outcomes, dropped points by safe provider label, database bytes, store readiness, and last successful rollup. Enable the chart ServiceMonitor only when Prometheus Operator CRDs already exist:
 
 ```yaml
 serviceMonitor:
@@ -28,7 +28,7 @@ serviceMonitor:
 
 Controller logs record configuration loading, automatic TTL stops, and cleanup errors. Kubernetes events remain the primary source for scheduling, volume, image, and Service allocation failures.
 
-Recommended alerts include controller readiness failure, controller crash loops, degraded boxes, workspace restart growth, PVC capacity pressure, and boxes that remain starting beyond the normal image and volume provisioning window.
+Recommended alerts include controller readiness failure, controller crash loops, degraded boxes, workspace restart growth, PVC capacity pressure, boxes that remain starting beyond the normal image and volume provisioning window, stale Insights collectors, reported outbox loss, and an Insights database beyond its configured warning threshold.
 
 ## Capacity planning
 
@@ -52,6 +52,17 @@ Before relying on a backup process:
 
 Devboxes does not create VolumeSnapshots and does not automatically back up or delete PVCs.
 
+When Insights is enabled, create a consistent database snapshot with the authenticated online-backup endpoint:
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $DEVBOX_TOKEN" \
+  -o devboxes-insights.db \
+  "$DEVBOX_URL/api/v1/insights/export?format=sqlite"
+```
+
+Do not copy only the live database file while SQLite WAL mode is active. Restore with the controller stopped, replace the database on the Insights PVC using an administrative pod, preserve ownership for uid and gid 10001, then verify `/ready`, `/insights`, and `devbox metrics status`.
+
 ## Upgrades
 
 Read [CHANGELOG.md](../CHANGELOG.md), back up important volumes, and render the new chart before applying it.
@@ -70,6 +81,8 @@ helm upgrade devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
 ```
 
 Then run `scripts/verify-install.sh`, confirm `/ready`, list existing boxes, create a disposable smoke box, connect over SSH, stop it, start it, and delete it with purge.
+
+Enabling Insights does not force-restart an active legacy workspace. `devbox metrics status` reports `restart_required` until the box goes through a normal stop and start. Stopped workspaces are updated without starting compute. Confirm the expected state before and after the rollout.
 
 Prefer a reviewed values file over `--reuse-values`. It makes removed defaults and configuration drift visible.
 
@@ -95,6 +108,8 @@ kubectl rollout status deployment/devboxes -n devboxes
 
 Rotation invalidates browser sessions and saved CLI tokens. Log in again after the rollout. Rotate immediately after suspected disclosure, then review controller access logs available at the ingress or network boundary.
 
+When `insights.signingKeyKey` is empty, the same controller-token rotation also rotates the domain-separated ingest signing key. Active workspaces need a normal stop and start to receive a new scoped credential. With a dedicated Insights signing key, rotate that field independently and follow the same workspace reconciliation procedure.
+
 Rotate workspace provider tokens independently through the workspace Secret. Existing files copied into persistent homes are not overwritten automatically, so revoke compromised provider sessions at the provider and update affected homes explicitly.
 
 ## Uninstall and data retention
@@ -109,6 +124,8 @@ kubectl get deployment,service,pvc -n devboxes \
 ```
 
 Back up required PVCs, delete boxes through the CLI, and use `--purge` only for volumes approved for permanent removal. Verify the namespace contents before deleting the namespace.
+
+If `insights.storage.retainOnDelete=true`, the chart-created central Insights PVC remains after uninstall. Per-workspace outboxes remain on retained home PVCs. Remove either data layer only after a separate backup and retention decision.
 
 ## Disaster recovery
 

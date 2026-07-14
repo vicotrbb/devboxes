@@ -34,6 +34,11 @@ _STATE_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 _PKCE_RE = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
 _CODE_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 _SIGNING_DOMAIN = b"devboxes:cli-token-signing-key:v1"
+_INSIGHTS_SIGNING_DOMAIN = b"devboxes:insights-ingest-signing-key:v1"
+_INSIGHTS_TOKEN_RE = re.compile(
+    r"^v1\.([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\."
+    r"([a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)\.([A-Za-z0-9_-]{43})$"
+)
 
 
 @dataclass(frozen=True)
@@ -167,6 +172,15 @@ class Authenticator:
             configured_signing_key
             or hmac.new(self._token, _SIGNING_DOMAIN, hashlib.sha256).digest()
         )
+        configured_insights_key = (
+            settings.insights_signing_key.get_secret_value().encode()
+            if settings.insights_signing_key is not None
+            else None
+        )
+        self._insights_signing_key = (
+            configured_insights_key
+            or hmac.new(self._token, _INSIGHTS_SIGNING_DOMAIN, hashlib.sha256).digest()
+        )
 
     def issue_session(self) -> tuple[str, str]:
         """Issue a signed browser session and its matching CSRF token."""
@@ -246,6 +260,36 @@ class Authenticator:
             return str(claims["sub"])
         except (InvalidTokenError, TypeError, ValueError):
             return None
+
+    def issue_insights_token(self, instance_id: str, box_name: str) -> str:
+        """Issue a deterministic, write-only token scoped to one retained instance."""
+        payload = f"v1.{instance_id}.{box_name}"
+        signature = hmac.new(
+            self._insights_signing_key,
+            payload.encode(),
+            hashlib.sha256,
+        ).digest()
+        return f"{payload}.{_b64(signature)}"
+
+    def validate_insights_token(self, candidate: str) -> tuple[str, str] | None:
+        """Validate an ingest-only credential and return its authoritative scope."""
+        match = _INSIGHTS_TOKEN_RE.fullmatch(candidate)
+        if match is None:
+            return None
+        instance_id, box_name, encoded_signature = match.groups()
+        payload = f"v1.{instance_id}.{box_name}"
+        try:
+            signature = _unb64(encoded_signature)
+        except ValueError:
+            return None
+        expected = hmac.new(
+            self._insights_signing_key,
+            payload.encode(),
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(signature, expected):
+            return None
+        return instance_id, box_name
 
     def validate_session(self, candidate: str) -> str | None:
         """Return the CSRF value for a valid unexpired session."""

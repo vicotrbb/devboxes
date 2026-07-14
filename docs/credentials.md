@@ -21,6 +21,14 @@ session rotation without adding another Secret. The key is optional and must con
 least 32 strong random characters. Rotating whichever effective signing key is configured
 revokes all issued CLI tokens.
 
+## Insights ingest credentials
+
+When Insights is enabled, the controller creates one namespaced Secret per workspace. It contains a write-only, HMAC-signed credential scoped to that box name and UUID instance. The workspace sidecar can submit sanitized batches but cannot read Insights, control devboxes, or mint another credential.
+
+By default, the ingest signing key is derived from the controller access token with its own versioned domain separation. To rotate it independently, add a strong random key of at least 32 characters to the controller Secret and point `insights.signingKeyKey` at that field. Never put the value in Helm values.
+
+The generated per-workspace Secret is deleted with workspace compute. Its value is referenced through `secretKeyRef`, not embedded in the Deployment. Retaining the home PVC preserves the workspace instance ID and outbox; a normal recreate issues a fresh credential for that same instance.
+
 ## Workspace Secret
 
 Create the minimal Secret with an SSH public key:

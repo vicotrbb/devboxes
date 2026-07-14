@@ -1,0 +1,81 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "codex_exec"}},
+          {"key": "service.version", "value": {"stringValue": "0.144.0"}},
+          {"key": "host.name", "value": {"stringValue": "sensitive-host"}}
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {"name": "codex_otel", "version": "0.144.0"},
+          "metrics": [
+            {
+              "name": "codex.process.start",
+              "unit": "1",
+              "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {"key": "auth_mode", "value": {"stringValue": "chatgpt"}},
+                      {"key": "conversation.id", "value": {"stringValue": "sensitive-session"}}
+                    ],
+                    "startTimeUnixNano": "1784056003000000000",
+                    "timeUnixNano": "1784056003100000000",
+                    "asInt": "1"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "codex.turn.token_usage",
+              "unit": "tokens",
+              "histogram": {
+                "aggregationTemporality": 1,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {"key": "model", "value": {"stringValue": "gpt-5.2-codex"}},
+                      {"key": "token_type", "value": {"stringValue": "total"}},
+                      {"key": "prompt", "value": {"stringValue": "sensitive-prompt"}}
+                    ],
+                    "startTimeUnixNano": "1784056003000000000",
+                    "timeUnixNano": "1784056003200000000",
+                    "count": "1",
+                    "sum": 42,
+                    "min": 42,
+                    "max": 42,
+                    "bucketCounts": ["0", "1"],
+                    "explicitBounds": [64]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "codex.sqlite.init.duration_ms",
+              "unit": "ms",
+              "histogram": {
+                "aggregationTemporality": 1,
+                "dataPoints": [
+                  {
+                    "attributes": [{"key": "status", "value": {"stringValue": "ok"}}],
+                    "startTimeUnixNano": "1784056003000000000",
+                    "timeUnixNano": "1784056003300000000",
+                    "count": "1",
+                    "sum": 5.5,
+                    "bucketCounts": ["1"],
+                    "explicitBounds": [10]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

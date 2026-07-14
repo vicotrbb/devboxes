@@ -57,6 +57,28 @@ workspace:
     externalTrafficPolicy: Cluster
     loadBalancerSourceRanges: []
 
+insights:
+  enabled: false
+  # Optional key in controller.existingSecret. Empty derives a dedicated,
+  # domain-separated ingest key without exposing the master or CLI key.
+  signingKeyKey: ""
+  storage:
+    existingClaim: ""
+    storageClass: ""
+    size: 2Gi
+    warningBytes: 1717986918
+    accessMode: ReadWriteOnce
+    retainOnDelete: true
+  retention:
+    rawDays: 30
+    hourlyDays: 90
+    dailyDays: 365
+  agent:
+    scanIntervalSeconds: 60
+    repositoryDepth: 4
+    maxQueueBytes: 134217728
+    maxQueueAgeSeconds: 604800
+
 service:
   type: ClusterIP
   port: 8000

@@ -19,6 +19,8 @@ from devboxes_controller.models import CreateDevboxRequest, DevboxState, Preset
 from devboxes_controller.resources import (
     ANNOTATION_CREATED_AT,
     ANNOTATION_EXPIRES_AT,
+    ANNOTATION_INSIGHTS_STATE,
+    ANNOTATION_INSTANCE_ID,
     ANNOTATION_PRESET,
     ANNOTATION_STORAGE,
     ANNOTATION_TTL_HOURS,
@@ -295,6 +297,121 @@ def test_create_uses_portable_node_port_and_default_storage_configuration() -> N
     assert service["spec"]["type"] == "NodePort"
     assert service["metadata"]["annotations"] == {"example.test/private": "true"}
     assert "nodePort" not in service["spec"]["ports"][0]
+
+
+def _legacy_deployment(replicas: int) -> SimpleNamespace:
+    now = datetime.now(UTC)
+    return SimpleNamespace(
+        metadata=SimpleNamespace(
+            name="devbox-atlas",
+            labels={LABEL_NAME: "atlas"},
+            annotations={
+                ANNOTATION_CREATED_AT: now.isoformat(),
+                ANNOTATION_EXPIRES_AT: (now + timedelta(hours=24)).isoformat(),
+                ANNOTATION_PRESET: "small",
+                ANNOTATION_STORAGE: "20Gi",
+                ANNOTATION_TTL_HOURS: "24",
+            },
+        ),
+        spec=SimpleNamespace(
+            replicas=replicas,
+            template=SimpleNamespace(
+                metadata=SimpleNamespace(annotations={}),
+                spec=SimpleNamespace(containers=[SimpleNamespace(name="devbox")]),
+            ),
+        ),
+    )
+
+
+def test_insights_create_scopes_identity_to_the_retained_home_volume() -> None:
+    apps = Mock()
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    core = Mock()
+    core.read_namespaced_persistent_volume_claim.side_effect = ApiException(status=404)
+    core.read_namespaced_secret.side_effect = ApiException(status=404)
+    manager = DevboxManager(
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            insights_enabled=True,
+        ),
+        apps_api=apps,
+        core_api=core,
+    )
+    manager.get = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
+
+    asyncio.run(manager.create(CreateDevboxRequest(name="atlas")))
+
+    pvc = core.create_namespaced_persistent_volume_claim.call_args.args[1]
+    deployment = apps.create_namespaced_deployment.call_args.args[1]
+    instance_id = pvc["metadata"]["annotations"][ANNOTATION_INSTANCE_ID]
+    assert deployment["metadata"]["annotations"][ANNOTATION_INSTANCE_ID] == instance_id
+    sidecar = deployment["spec"]["template"]["spec"]["containers"][1]
+    credential_environment = next(
+        item for item in sidecar["env"] if item["name"] == "DEVBOXES_INSIGHTS_CREDENTIAL"
+    )
+    assert credential_environment["valueFrom"]["secretKeyRef"] == {
+        "name": "devbox-atlas-insights",
+        "key": "credential",
+    }
+    secret = core.create_namespaced_secret.call_args.args[1]
+    credential = secret["stringData"]["credential"]
+    assert credential.startswith(f"v1.{instance_id}.atlas.")
+    assert "test-access-token" not in credential
+
+
+def test_active_legacy_workspace_is_marked_restart_required_without_template_patch() -> None:
+    deployment = _legacy_deployment(1)
+    apps = Mock()
+    apps.list_namespaced_deployment.return_value = SimpleNamespace(items=[deployment])
+    core = Mock()
+    core.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(annotations={})
+    )
+    manager = DevboxManager(
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            insights_enabled=True,
+        ),
+        apps_api=apps,
+        core_api=core,
+    )
+
+    assert asyncio.run(manager.reconcile_insights()) == ["atlas"]
+
+    patch = apps.patch_namespaced_deployment.call_args.args[2]
+    assert "spec" not in patch
+    assert patch["metadata"]["annotations"][ANNOTATION_INSIGHTS_STATE] == "restart_required"
+    assert ANNOTATION_INSTANCE_ID in patch["metadata"]["annotations"]
+    core.patch_namespaced_persistent_volume_claim.assert_called_once()
+
+
+def test_stopped_legacy_workspace_template_is_reconciled_without_starting_it() -> None:
+    deployment = _legacy_deployment(0)
+    apps = Mock()
+    apps.list_namespaced_deployment.return_value = SimpleNamespace(items=[deployment])
+    apps.read_namespaced_deployment.return_value = _legacy_deployment(0)
+    core = Mock()
+    core.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(
+            annotations={ANNOTATION_INSTANCE_ID: "99999999-9999-4999-8999-999999999999"}
+        )
+    )
+    manager = DevboxManager(
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            insights_enabled=True,
+        ),
+        apps_api=apps,
+        core_api=core,
+    )
+
+    assert asyncio.run(manager.reconcile_insights()) == ["atlas"]
+
+    patch = apps.patch_namespaced_deployment.call_args.args[2]
+    assert "replicas" not in patch["spec"]
+    containers = patch["spec"]["template"]["spec"]["containers"]
+    assert [item["name"] for item in containers] == ["devbox", "insights-agent"]
+    assert patch["metadata"]["annotations"][ANNOTATION_INSIGHTS_STATE] == "collecting"
 
 
 def test_node_port_model_includes_allocated_port_in_ssh_command() -> None:
