@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Insights · Devboxes</title>
+    <link rel="icon" href="/static/favicon.svg?v={{ version }}" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/styles.css?v={{ version }}">
+    <script src="/static/insights.js?v={{ version }}" defer></script>
+  </head>
+  <body class="insights-page" data-insights-enabled="{{ 'true' if insights_enabled else 'false' }}">
+    <a class="skip-link" href="#main-content">Skip to Insights</a>
+    <header class="app-header">
+      <div class="header-leading">
+        <a class="wordmark" href="/" aria-label="Devboxes home">
+          <span class="wordmark-mark" aria-hidden="true">db</span>
+          <span>devboxes</span>
+        </a>
+        <nav class="primary-nav" aria-label="Primary navigation">
+          <a class="nav-link" href="/">Workbench</a>
+          <a class="nav-link" href="/insights" aria-current="page">Insights</a>
+          <a class="nav-link" href="/docs">Docs</a>
+        </nav>
+      </div>
+      <div class="header-actions">
+        <span class="cluster-state"><span aria-hidden="true"></span> {{ cluster_name }} connected</span>
+        <button class="button button-quiet" id="insights-refresh" type="button">Refresh</button>
+        <button class="button button-quiet" id="logout-button" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <main class="app-main insights-main" id="main-content" tabindex="-1">
+      <section class="page-intro insights-intro" aria-labelledby="page-title">
+        <div>
+          <p class="context-line">Private by design · opt-in collection</p>
+          <h1 id="page-title">Understand the work, not the worker.</h1>
+          <p>
+            AI usage and source activity stay separate. Insights stores numeric metrics and Git
+            aggregates, never prompts, transcripts, commands, paths, authors, or file content.
+          </p>
+        </div>
+        <span class="privacy-badge">Metrics only</span>
+      </section>
+
+      {% if not insights_enabled %}
+      <section class="insights-disabled" aria-labelledby="disabled-title">
+        <div class="empty-glyph" aria-hidden="true">i</div>
+        <div>
+          <p class="context-line">Safe default</p>
+          <h2 id="disabled-title">Insights is off.</h2>
+          <p>
+            Enable it explicitly in Helm. Existing running devboxes are not restarted; they report
+            a restart-required state until their next operator-controlled restart.
+          </p>
+          <pre><code>insights:
+  enabled: true</code></pre>
+          <a class="button button-primary" href="/docs#insights">Read the privacy and operations guide</a>
+        </div>
+      </section>
+      {% else %}
+      <form class="insights-filters" id="insights-filters" aria-label="Insights filters">
+        <div class="field">
+          <label for="insights-range">Range</label>
+          <select id="insights-range" name="range">
+            <option value="24h">Last 24 hours</option>
+            <option value="7d" selected>Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="custom">Custom range</option>
+          </select>
+        </div>
+        <div class="field custom-range" id="custom-since-field" hidden>
+          <label for="insights-since">Since</label>
+          <input id="insights-since" name="since" type="datetime-local">
+        </div>
+        <div class="field custom-range" id="custom-until-field" hidden>
+          <label for="insights-until">Until</label>
+          <input id="insights-until" name="until" type="datetime-local">
+        </div>
+        <div class="field">
+          <label for="insights-box">Devbox <span>optional</span></label>
+          <input id="insights-box" name="box" type="text" maxlength="40" placeholder="all boxes">
+        </div>
+        <div class="field">
+          <label for="insights-provider">Provider</label>
+          <select id="insights-provider" name="provider">
+            <option value="">All providers</option>
+            <option value="codex">Codex</option>
+            <option value="claude">Claude</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="insights-model">Model <span>optional</span></label>
+          <input id="insights-model" name="model" type="text" maxlength="160" placeholder="all models">
+        </div>
+        <div class="field">
+          <label for="insights-repo">Repository <span>optional</span></label>
+          <input id="insights-repo" name="repo" type="text" maxlength="160" placeholder="all repositories">
+        </div>
+        <button class="button button-primary insights-apply" type="submit">Apply filters</button>
+      </form>
+
+      <div class="coverage-banner" id="coverage-banner" role="status" aria-live="polite">
+        <span class="coverage-dot" aria-hidden="true"></span>
+        <span id="coverage-copy">Loading collector coverage…</span>
+      </div>
+
+      <div class="insights-loading" id="insights-loading" aria-label="Loading Insights">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <div class="form-error insights-error" id="insights-error" role="alert" tabindex="-1" hidden></div>
+      <section class="insights-empty" id="insights-empty" hidden aria-labelledby="insights-empty-title">
+        <div class="empty-glyph" aria-hidden="true">∅</div>
+        <div>
+          <h2 id="insights-empty-title">No metrics in this range.</h2>
+          <p>Start an enabled devbox and use Codex, Claude, or Git. The first Git scan is a baseline.</p>
+        </div>
+      </section>
+
+      <div id="insights-content" hidden>
+        <section aria-labelledby="ai-summary-title">
+          <div class="section-heading insights-section-heading">
+            <div>
+              <p class="context-line">AI telemetry</p>
+              <h2 id="ai-summary-title">Usage reported by local clients</h2>
+              <p>Cost is a Claude provider estimate. Codex cost is not reported.</p>
+            </div>
+          </div>
+          <div class="metric-grid" id="ai-metric-grid">
+            <article class="metric-card"><span>Sessions</span><strong id="metric-sessions">0</strong><small>Codex uses process starts</small></article>
+            <article class="metric-card"><span>Tokens</span><strong id="metric-tokens">0</strong><small>Input and output totals</small></article>
+            <article class="metric-card"><span>Provider cost</span><strong id="metric-cost">Not reported</strong><small>Claude estimate only</small></article>
+            <article class="metric-card"><span>Active time</span><strong id="metric-active">Not reported</strong><small>Claude reported</small></article>
+            <article class="metric-card"><span>AI-modified lines</span><strong id="metric-ai-lines">Not reported</strong><small>Claude telemetry, not Git churn</small></article>
+          </div>
+        </section>
+
+        <section class="insights-panel" aria-labelledby="usage-trend-title">
+          <div class="section-heading insights-section-heading">
+            <div>
+              <h2 id="usage-trend-title">Token usage over time</h2>
+              <p>Bars and the table below represent the same values.</p>
+            </div>
+          </div>
+          <div class="insights-bars" id="token-chart" role="img" aria-label="Token usage over time"></div>
+          <div class="devbox-table-wrap insights-table-wrap">
+            <table class="devbox-table compact-table">
+              <caption class="visually-hidden">Token usage values by time and provider</caption>
+              <thead><tr><th scope="col">Period</th><th scope="col">Provider</th><th scope="col">Tokens</th></tr></thead>
+              <tbody id="token-table"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="insights-panel" aria-labelledby="provider-title">
+          <div class="section-heading insights-section-heading">
+            <div>
+              <h2 id="provider-title">Provider breakdown</h2>
+              <p>Unsupported values remain visibly unavailable instead of becoming zero.</p>
+            </div>
+          </div>
+          <div class="devbox-table-wrap insights-table-wrap">
+            <table class="devbox-table compact-table">
+              <thead><tr><th scope="col">Provider</th><th scope="col">Sessions</th><th scope="col">Tokens</th><th scope="col">Token types</th><th scope="col">Cost</th><th scope="col">Active time</th><th scope="col">Models</th></tr></thead>
+              <tbody id="provider-table"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="code-summary-title">
+          <div class="section-heading insights-section-heading">
+            <div>
+              <p class="context-line">Repository activity</p>
+              <h2 id="code-summary-title">Git facts, counted separately</h2>
+              <p>No author names, commit messages, paths, remotes with credentials, or file content.</p>
+            </div>
+          </div>
+          <div class="metric-grid code-metric-grid">
+            <article class="metric-card"><span>Commits observed</span><strong id="metric-commits">0</strong><small>Merges count once</small></article>
+            <article class="metric-card"><span>Lines added</span><strong id="metric-additions">0</strong><small>Text files only</small></article>
+            <article class="metric-card"><span>Lines deleted</span><strong id="metric-deletions">0</strong><small>Text files only</small></article>
+            <article class="metric-card"><span>Current worktree</span><strong id="metric-worktree">Clean</strong><small id="metric-worktree-detail">Staged plus unstaged tracked changes</small></article>
+          </div>
+        </section>
+
+        <section class="insights-columns">
+          <article class="insights-panel" aria-labelledby="activity-title">
+            <div class="section-heading insights-section-heading"><div><h2 id="activity-title">Recent activity</h2><p>Aggregate commit observations only.</p></div></div>
+            <ol class="activity-list" id="activity-list"></ol>
+          </article>
+          <article class="insights-panel" aria-labelledby="collectors-title">
+            <div class="section-heading insights-section-heading"><div><h2 id="collectors-title">Collector health</h2><p>Freshness, queue size, and known loss.</p></div></div>
+            <ul class="collector-list" id="collector-list"></ul>
+          </article>
+        </section>
+
+        <section class="capability-note" aria-labelledby="capability-title">
+          <h2 id="capability-title">What Insights cannot claim</h2>
+          <p>
+            It does not estimate Codex cost, score productivity, infer AI-written percentages, or
+            reconstruct history that the local collectors never observed.
+          </p>
+        </section>
+      </div>
+      {% endif %}
+    </main>
+  </body>
+</html>

@@ -3,9 +3,9 @@
 Use a values file for durable installations:
 
 ```bash
-helm show values oci://ghcr.io/vicotrbb/charts/devboxes --version 0.2.1 > values.yaml
+helm show values oci://ghcr.io/vicotrbb/charts/devboxes --version 0.3.0 > values.yaml
 helm upgrade --install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
-  --version 0.2.1 \
+  --version 0.3.0 \
   --namespace devboxes \
   --create-namespace \
   --values values.yaml
@@ -105,9 +105,33 @@ ingress:
 
 The chart does not create certificates or DNS records. Use cert-manager, your cloud controller, or an existing TLS Secret. Keep the controller on a trusted network unless you have intentionally hardened the surrounding ingress, authentication, and rate limiting for internet exposure.
 
+## Insights
+
+Insights is opt-in and disabled by default. When enabled, the controller uses one replica, a `Recreate` deployment strategy, and a persistent SQLite volume. Each new or normally restarted workspace gets a loopback metrics collector sidecar and a scoped write-only ingest credential.
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `insights.enabled` | `false` | Enable central storage, workspace collection, APIs, CLI queries, and the dashboard |
+| `insights.signingKeyKey` | empty | Optional dedicated ingest-signing key in `controller.existingSecret` |
+| `insights.storage.existingClaim` | empty | Reuse an existing controller database PVC |
+| `insights.storage.storageClass` | empty | Empty uses the cluster default StorageClass |
+| `insights.storage.size` | `2Gi` | Requested central database capacity |
+| `insights.storage.warningBytes` | `1717986918` | Database-size warning threshold exposed by the API and dashboard |
+| `insights.storage.accessMode` | `ReadWriteOnce` | Use `ReadWriteOncePod` when supported and operationally preferred |
+| `insights.storage.retainOnDelete` | `true` | Keep the chart-created database PVC when the Helm release is deleted |
+| `insights.retention.rawDays` | `30` | Raw metric-point retention |
+| `insights.retention.hourlyDays` | `90` | Hourly rollup retention |
+| `insights.retention.dailyDays` | `365` | Daily rollup and sparse Git activity retention |
+| `insights.agent.scanIntervalSeconds` | `60` | Workspace Git scan and heartbeat interval |
+| `insights.agent.repositoryDepth` | `4` | Maximum repository discovery depth below `/home/dev/workspace` |
+| `insights.agent.maxQueueBytes` | `134217728` | Per-workspace durable outbox byte limit |
+| `insights.agent.maxQueueAgeSeconds` | `604800` | Per-workspace durable outbox age limit |
+
+The central PVC must support SQLite file locking and write-ahead logging. Do not use NFS or another network filesystem with unreliable locking. See [Insights](insights.md) for data semantics, trust boundaries, rollout behavior, and restore procedures.
+
 ## Observability
 
-`/health` verifies the process, `/ready` verifies Kubernetes API access, and `/metrics` exposes a Prometheus gauge by devbox state. Set `serviceMonitor.enabled=true` only when the Prometheus Operator CRDs already exist. Add `serviceMonitor.labels` if your Prometheus selector requires them.
+`/health` verifies the process. `/ready` verifies Kubernetes API access and, when enabled, the Insights store. `/metrics` exposes low-cardinality controller and Insights operational metrics. Set `serviceMonitor.enabled=true` only when the Prometheus Operator CRDs already exist. Add `serviceMonitor.labels` if your Prometheus selector requires them.
 
 ## Upgrades
 

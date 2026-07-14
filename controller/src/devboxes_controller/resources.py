@@ -1,5 +1,7 @@
 """Build Kubernetes manifests for managed devbox resources."""
 
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -15,6 +17,9 @@ ANNOTATION_REPOSITORY = "devboxes.bonalab.org/repository"
 ANNOTATION_PRESET = "devboxes.bonalab.org/preset"
 ANNOTATION_STORAGE = "devboxes.bonalab.org/storage-size"
 ANNOTATION_AUTO_STOPPED_AT = "devboxes.bonalab.org/auto-stopped-at"
+ANNOTATION_INSTANCE_ID = "insights.devboxes.bonalab.org/instance-id"
+ANNOTATION_INSIGHTS_STATE = "insights.devboxes.bonalab.org/state"
+ANNOTATION_INSIGHTS_TEMPLATE_HASH = "insights.devboxes.bonalab.org/template-hash"
 
 
 PRESETS: dict[Preset, dict[str, str]] = {
@@ -55,7 +60,11 @@ def labels(name: str) -> dict[str, str]:
     }
 
 
-def annotations(request: CreateDevboxRequest, now: datetime | None = None) -> dict[str, str]:
+def annotations(
+    request: CreateDevboxRequest,
+    now: datetime | None = None,
+    instance_id: str | None = None,
+) -> dict[str, str]:
     """Return lifecycle and user-input annotations for a new devbox."""
     now = now or datetime.now(UTC)
     result = {
@@ -67,6 +76,8 @@ def annotations(request: CreateDevboxRequest, now: datetime | None = None) -> di
     }
     if request.repository:
         result[ANNOTATION_REPOSITORY] = request.repository
+    if instance_id:
+        result[ANNOTATION_INSTANCE_ID] = instance_id
     return result
 
 
@@ -74,6 +85,7 @@ def build_pvc(
     request: CreateDevboxRequest,
     namespace: str,
     storage_class: str | None,
+    instance_id: str | None = None,
 ) -> dict[str, Any]:
     """Build the persistent home volume claim for a devbox."""
     manifest: dict[str, Any] = {
@@ -83,6 +95,9 @@ def build_pvc(
             "name": f"{resource_name(request.name)}-home",
             "namespace": namespace,
             "labels": labels(request.name),
+            "annotations": (
+                {ANNOTATION_INSTANCE_ID: instance_id} if instance_id is not None else {}
+            ),
         },
         "spec": {
             "accessModes": ["ReadWriteOnce"],
@@ -103,6 +118,15 @@ def build_deployment(
     workspace_priority_class: str | None = None,
     image_pull_secret: str | None = None,
     now: datetime | None = None,
+    instance_id: str | None = None,
+    insights_enabled: bool = False,
+    insights_endpoint: str | None = None,
+    insights_credential: str | None = None,
+    insights_secret_name: str | None = None,
+    insights_scan_interval_seconds: int = 60,
+    insights_repository_depth: int = 4,
+    insights_max_queue_bytes: int = 134_217_728,
+    insights_max_queue_age_seconds: int = 604_800,
 ) -> dict[str, Any]:
     """Build the disposable workspace Deployment for a devbox."""
     name = resource_name(request.name)
@@ -113,6 +137,34 @@ def build_deployment(
     ]
     if request.repository:
         env.append({"name": "DEVBOX_REPOSITORY", "value": request.repository})
+    if insights_enabled:
+        env.extend(
+            [
+                {"name": "DEVBOXES_INSIGHTS_ENABLED", "value": "true"},
+                {"name": "CLAUDE_CODE_ENABLE_TELEMETRY", "value": "1"},
+                {"name": "OTEL_METRICS_EXPORTER", "value": "otlp"},
+                {"name": "OTEL_LOGS_EXPORTER", "value": "none"},
+                {"name": "OTEL_TRACES_EXPORTER", "value": "none"},
+                {"name": "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "value": "http/json"},
+                {
+                    "name": "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                    "value": "http://127.0.0.1:4318/v1/metrics",
+                },
+                {
+                    "name": "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE",
+                    "value": "delta",
+                },
+                {"name": "OTEL_METRICS_INCLUDE_SESSION_ID", "value": "false"},
+                {"name": "OTEL_METRICS_INCLUDE_ACCOUNT_UUID", "value": "false"},
+                {"name": "OTEL_METRICS_INCLUDE_VERSION", "value": "true"},
+                {"name": "OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES", "value": "false"},
+                {"name": "OTEL_LOG_USER_PROMPTS", "value": "0"},
+                {"name": "OTEL_LOG_ASSISTANT_RESPONSES", "value": "0"},
+                {"name": "OTEL_LOG_TOOL_DETAILS", "value": "0"},
+                {"name": "OTEL_LOG_TOOL_CONTENT", "value": "0"},
+                {"name": "OTEL_LOG_RAW_API_BODIES", "value": "0"},
+            ]
+        )
 
     pod_spec: dict[str, Any] = {
         "serviceAccountName": workspace_service_account_name,
@@ -204,14 +256,77 @@ def build_deployment(
     if image_pull_secret:
         pod_spec["imagePullSecrets"] = [{"name": image_pull_secret}]
 
-    return {
+    if insights_enabled:
+        if not all((instance_id, insights_endpoint, insights_credential)):
+            raise ValueError(
+                "enabled Insights requires instance identity, endpoint, and credential"
+            )
+        credential_environment: dict[str, Any] = {"name": "DEVBOXES_INSIGHTS_CREDENTIAL"}
+        if insights_secret_name:
+            credential_environment["valueFrom"] = {
+                "secretKeyRef": {
+                    "name": insights_secret_name,
+                    "key": "credential",
+                }
+            }
+        else:
+            credential_environment["value"] = insights_credential
+        pod_spec["containers"].append(
+            {
+                "name": "insights-agent",
+                "image": workspace_image,
+                "imagePullPolicy": "IfNotPresent",
+                "command": ["python3", "/usr/local/bin/devbox-insights-agent"],
+                "env": [
+                    {"name": "HOME", "value": "/home/dev"},
+                    {"name": "PYTHONDONTWRITEBYTECODE", "value": "1"},
+                    {"name": "DEVBOXES_INSIGHTS_ENDPOINT", "value": insights_endpoint},
+                    credential_environment,
+                    {
+                        "name": "DEVBOXES_INSIGHTS_SCAN_INTERVAL_SECONDS",
+                        "value": str(insights_scan_interval_seconds),
+                    },
+                    {
+                        "name": "DEVBOXES_INSIGHTS_REPOSITORY_DEPTH",
+                        "value": str(insights_repository_depth),
+                    },
+                    {
+                        "name": "DEVBOXES_INSIGHTS_MAX_QUEUE_BYTES",
+                        "value": str(insights_max_queue_bytes),
+                    },
+                    {
+                        "name": "DEVBOXES_INSIGHTS_MAX_QUEUE_AGE_SECONDS",
+                        "value": str(insights_max_queue_age_seconds),
+                    },
+                ],
+                "resources": {
+                    "requests": {"cpu": "25m", "memory": "32Mi"},
+                    "limits": {"cpu": "200m", "memory": "128Mi"},
+                },
+                "securityContext": {
+                    "runAsNonRoot": True,
+                    "runAsUser": 1000,
+                    "runAsGroup": 1000,
+                    "allowPrivilegeEscalation": False,
+                    "readOnlyRootFilesystem": True,
+                    "capabilities": {"drop": ["ALL"]},
+                },
+                "volumeMounts": [{"name": "home", "mountPath": "/home/dev"}],
+            }
+        )
+
+    deployment_annotations = annotations(request, now, instance_id)
+    deployment_annotations[ANNOTATION_INSIGHTS_STATE] = (
+        "collecting" if insights_enabled else "disabled"
+    )
+    manifest: dict[str, Any] = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
         "metadata": {
             "name": name,
             "namespace": namespace,
             "labels": box_labels,
-            "annotations": annotations(request, now),
+            "annotations": deployment_annotations,
         },
         "spec": {
             "replicas": 1,
@@ -222,11 +337,34 @@ def build_deployment(
             "strategy": {"type": "Recreate"},
             "selector": {"matchLabels": {LABEL_NAME: request.name}},
             "template": {
-                "metadata": {"labels": box_labels},
+                "metadata": {
+                    "labels": box_labels,
+                    "annotations": (
+                        {ANNOTATION_INSTANCE_ID: instance_id} if instance_id is not None else {}
+                    ),
+                },
                 "spec": pod_spec,
             },
         },
     }
+    if insights_enabled:
+        template_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "pod_spec": manifest["spec"]["template"]["spec"],
+                    "credential_fingerprint": hashlib.sha256(
+                        str(insights_credential).encode()
+                    ).hexdigest(),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        manifest["metadata"]["annotations"][ANNOTATION_INSIGHTS_TEMPLATE_HASH] = template_hash
+        manifest["spec"]["template"]["metadata"]["annotations"][
+            ANNOTATION_INSIGHTS_TEMPLATE_HASH
+        ] = template_hash
+    return manifest
 
 
 def build_service(

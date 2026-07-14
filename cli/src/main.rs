@@ -9,13 +9,16 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use tokio::process::Command;
 use tokio::time::{Instant, sleep};
 
 use client::ApiClient;
 use config::StoredConfig;
-use models::{CreateDevbox, Devbox, Preset};
+use models::{
+    CollectorStatus, CreateDevbox, Devbox, InsightsActivity, InsightsActivityData,
+    InsightsEnvelope, InsightsStatusData, InsightsSummary, Preset,
+};
 
 #[derive(Parser)]
 #[command(
@@ -58,6 +61,8 @@ enum Commands {
     Stop(NameArgs),
     /// Delete compute and optionally purge the home volume.
     Delete(DeleteArgs),
+    /// Inspect privacy-preserving AI and repository metrics.
+    Metrics(MetricsArgs),
 }
 
 #[derive(Args)]
@@ -126,6 +131,103 @@ struct DeleteArgs {
     yes: bool,
 }
 
+#[derive(Args)]
+struct MetricsArgs {
+    #[command(flatten)]
+    filters: MetricsFilters,
+
+    #[command(subcommand)]
+    command: Option<MetricsCommand>,
+}
+
+#[derive(Args, Clone)]
+struct MetricsFilters {
+    /// Relative range such as 24h, 7d, or 30d, or an RFC 3339 timestamp.
+    #[arg(long, global = true, default_value = "7d")]
+    since: String,
+
+    /// Inclusive RFC 3339 range end (defaults to now).
+    #[arg(long, global = true)]
+    until: Option<String>,
+
+    /// Restrict results to one devbox name.
+    #[arg(long = "box", global = true, value_parser = validate_name)]
+    box_name: Option<String>,
+
+    /// Restrict results to codex or claude.
+    #[arg(long, global = true, value_parser = ["codex", "claude", "all"])]
+    provider: Option<String>,
+
+    /// Restrict results to one provider-reported model.
+    #[arg(long, global = true)]
+    model: Option<String>,
+
+    /// Restrict Git results to one normalized repository identifier.
+    #[arg(long, global = true)]
+    repo: Option<String>,
+
+    /// Request one stable grouping dimension.
+    #[arg(long, global = true, value_enum)]
+    group_by: Option<MetricsGroupBy>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum MetricsGroupBy {
+    Provider,
+    Model,
+    Box,
+    Repository,
+}
+
+impl std::fmt::Display for MetricsGroupBy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Provider => "provider",
+            Self::Model => "model",
+            Self::Box => "box",
+            Self::Repository => "repository",
+        })
+    }
+}
+
+#[derive(Subcommand)]
+enum MetricsCommand {
+    /// Show collector freshness, queue size, and known loss.
+    Status,
+    /// Show aggregate commit activity.
+    Activity {
+        /// Maximum activity rows to return.
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=200))]
+        limit: u16,
+    },
+    /// Export the filtered summary to stdout.
+    Export {
+        #[arg(long, value_enum, default_value_t = MetricsExportFormat::Json)]
+        format: MetricsExportFormat,
+    },
+    /// Permanently purge central Insights data for --box.
+    Purge {
+        /// Skip the destructive confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum MetricsExportFormat {
+    Json,
+    Csv,
+}
+
+impl std::fmt::Display for MetricsExportFormat {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Json => "json",
+            Self::Csv => "csv",
+        })
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -146,6 +248,7 @@ async fn main() -> Result<()> {
         Commands::Start(args) => lifecycle(&client, &args.name, true, cli.json).await,
         Commands::Stop(args) => lifecycle(&client, &args.name, false, cli.json).await,
         Commands::Delete(args) => delete(&client, args).await,
+        Commands::Metrics(args) => metrics(&client, args, cli.json).await,
     }
 }
 
@@ -349,6 +452,245 @@ async fn delete(client: &ApiClient, args: DeleteArgs) -> Result<()> {
     Ok(())
 }
 
+async fn metrics(client: &ApiClient, args: MetricsArgs, json: bool) -> Result<()> {
+    let MetricsArgs { filters, command } = args;
+    match command {
+        None => {
+            let response = client.insights_summary(&metrics_query(&filters)).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            } else {
+                print_metrics_summary(&response);
+            }
+        }
+        Some(MetricsCommand::Status) => {
+            let response = client.insights_status(&metrics_query(&filters)).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            } else {
+                print_metrics_status(&response);
+            }
+        }
+        Some(MetricsCommand::Activity { limit }) => {
+            let mut query = metrics_query(&filters);
+            query.push(("limit".to_owned(), limit.to_string()));
+            let response = client.insights_activity(&query).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            } else {
+                print_metrics_activity(&response);
+            }
+        }
+        Some(MetricsCommand::Export { format }) => {
+            let mut query = metrics_query(&filters);
+            query.push(("format".to_owned(), format.to_string()));
+            print!("{}", client.insights_export(&query).await?);
+        }
+        Some(MetricsCommand::Purge { yes }) => {
+            let name = filters
+                .box_name
+                .as_deref()
+                .context("metrics purge requires --box NAME")?;
+            if !yes {
+                print!(
+                    "Permanently purge central Insights data for {name}? Type the devbox name to continue: "
+                );
+                io::stdout().flush()?;
+                let mut confirmation = String::new();
+                io::stdin().read_line(&mut confirmation)?;
+                if confirmation.trim() != name {
+                    bail!("confirmation did not match; no Insights data was deleted");
+                }
+            }
+            let result = client.purge_insights(name).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!(
+                    "purged {} Insights instance{} for {}",
+                    result.purged_instances,
+                    if result.purged_instances == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
+                    result.box_name
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn metrics_query(filters: &MetricsFilters) -> Vec<(String, String)> {
+    let mut query = vec![("since".to_owned(), filters.since.clone())];
+    for (key, value) in [
+        ("until", filters.until.as_ref()),
+        ("box", filters.box_name.as_ref()),
+        (
+            "provider",
+            filters
+                .provider
+                .as_ref()
+                .filter(|value| value.as_str() != "all"),
+        ),
+        ("model", filters.model.as_ref()),
+        ("repository", filters.repo.as_ref()),
+    ] {
+        if let Some(value) = value {
+            query.push((key.to_owned(), value.clone()));
+        }
+    }
+    if let Some(group_by) = filters.group_by {
+        query.push(("group_by".to_owned(), group_by.to_string()));
+    }
+    query
+}
+
+fn print_metrics_summary(response: &InsightsEnvelope<InsightsSummary>) {
+    if !response.enabled {
+        println!("Insights is disabled by the operator.");
+        return;
+    }
+    let Some(summary) = &response.data else {
+        println!("No Insights data is available.");
+        return;
+    };
+    let range = response.effective_range.as_ref().map_or_else(
+        || "requested range".to_owned(),
+        |value| format!("{} to {}", value.since, value.until),
+    );
+    println!("INSIGHTS  {range}");
+    let provider_cost = summary
+        .ai
+        .totals
+        .provider_reported_cost_usd
+        .map_or_else(|| "not reported".to_owned(), |value| format!("${value:.4}"));
+    let active_time = summary
+        .ai
+        .totals
+        .active_seconds
+        .map_or_else(|| "not reported".to_owned(), human_duration);
+    let ai_lines = summary
+        .ai
+        .totals
+        .ai_lines
+        .map_or_else(|| "not reported".to_owned(), |value| value.to_string());
+    println!(
+        "AI       {} sessions  {} tokens  {} provider cost  {} active  {} AI lines",
+        summary.ai.totals.sessions, summary.ai.totals.tokens, provider_cost, active_time, ai_lines,
+    );
+    for (provider, values) in &summary.ai.providers {
+        let cost = values
+            .cost_usd
+            .map_or_else(|| "not reported".to_owned(), |value| format!("${value:.4}"));
+        println!(
+            "  {provider:<7} {:>6} sessions  {:>10} tokens  {cost}",
+            values.sessions, values.total_tokens
+        );
+    }
+    let changed = summary.code.working_tree.staged_files + summary.code.working_tree.unstaged_files;
+    println!(
+        "CODE     {} commits  +{} -{}  {} files changed  {} worktree files",
+        summary.code.commits,
+        summary.code.additions,
+        summary.code.deletions,
+        summary.code.files_changed,
+        changed,
+    );
+    println!(
+        "COVERAGE {}  {} collector{}",
+        response.coverage.status,
+        response.coverage.collectors.len(),
+        if response.coverage.collectors.len() == 1 {
+            ""
+        } else {
+            "s"
+        }
+    );
+}
+
+fn print_metrics_status(response: &InsightsEnvelope<InsightsStatusData>) {
+    if !response.enabled {
+        println!("Insights is disabled by the operator.");
+        return;
+    }
+    let collectors: &[CollectorStatus] = response
+        .data
+        .as_ref()
+        .map_or(&[], |data| data.collectors.as_slice());
+    if collectors.is_empty() {
+        println!("No Insights collectors have checked in.");
+        return;
+    }
+    println!(
+        "{:<20} {:<10} {:<10} {:>8} {:>10} LOSS",
+        "BOX", "COLLECTOR", "STATUS", "AGE", "QUEUE"
+    );
+    for collector in collectors {
+        println!(
+            "{:<20} {:<10} {:<10} {:>7}s {:>10} {}",
+            collector.box_name,
+            collector.collector,
+            collector.status,
+            collector.freshness_seconds,
+            collector.queue_bytes,
+            collector.dropped_points,
+        );
+    }
+}
+
+fn print_metrics_activity(response: &InsightsEnvelope<InsightsActivityData>) {
+    if !response.enabled {
+        println!("Insights is disabled by the operator.");
+        return;
+    }
+    let items: &[InsightsActivity] = response
+        .data
+        .as_ref()
+        .map_or(&[], |data| data.items.as_slice());
+    if items.is_empty() {
+        println!("No aggregate Git activity was observed in this range.");
+        return;
+    }
+    for item in items {
+        println!(
+            "{}  {}  {}  +{} -{}  {} file{}{}",
+            item.observed_at,
+            item.box_name,
+            item.repo,
+            item.additions,
+            item.deletions,
+            item.files_changed,
+            if item.files_changed == 1 { "" } else { "s" },
+            if item.is_merge { "  merge" } else { "" },
+        );
+    }
+}
+
+fn human_duration(seconds: f64) -> String {
+    let safe_seconds = if seconds.is_finite() {
+        seconds.max(0.0)
+    } else {
+        0.0
+    };
+    let minutes = Duration::from_secs_f64(safe_seconds)
+        .as_secs()
+        .saturating_add(30)
+        / 60;
+    if minutes < 60 {
+        format!("{minutes}m")
+    } else {
+        let hours = minutes / 60;
+        let remainder = minutes % 60;
+        if remainder == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h {remainder}m")
+        }
+    }
+}
+
 async fn wait_until_ready(client: &ApiClient, name: &str, timeout: Duration) -> Result<Devbox> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -452,7 +794,12 @@ fn human_expiry(box_info: &Devbox) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_login_token, ssh_arguments, validate_name};
+    use clap::Parser;
+
+    use super::{
+        Cli, Commands, MetricsCommand, human_duration, metrics_query, resolve_login_token,
+        ssh_arguments, validate_name,
+    };
 
     #[test]
     fn login_token_prefers_the_flag_and_supports_the_environment() {
@@ -494,5 +841,61 @@ mod tests {
 
         assert!(forwarding < destination);
         assert!(arguments.contains(&"HostKeyAlias=devboxes-cluster-one-atlas".to_owned()));
+    }
+
+    #[test]
+    fn metrics_filters_are_stable_before_or_after_subcommands() {
+        let summary = Cli::try_parse_from([
+            "devbox",
+            "metrics",
+            "--since",
+            "24h",
+            "--box",
+            "atlas",
+            "--provider",
+            "codex",
+            "--group-by",
+            "model",
+        ])
+        .unwrap();
+        let Commands::Metrics(summary) = summary.command else {
+            panic!("expected metrics command");
+        };
+        assert!(summary.command.is_none());
+        assert_eq!(
+            metrics_query(&summary.filters),
+            vec![
+                ("since".to_owned(), "24h".to_owned()),
+                ("box".to_owned(), "atlas".to_owned()),
+                ("provider".to_owned(), "codex".to_owned()),
+                ("group_by".to_owned(), "model".to_owned()),
+            ]
+        );
+
+        let status = Cli::try_parse_from([
+            "devbox", "metrics", "status", "--box", "atlas", "--since", "7d",
+        ])
+        .unwrap();
+        let Commands::Metrics(status) = status.command else {
+            panic!("expected metrics command");
+        };
+        assert!(matches!(status.command, Some(MetricsCommand::Status)));
+        assert_eq!(status.filters.box_name.as_deref(), Some("atlas"));
+    }
+
+    #[test]
+    fn metrics_rejects_unknown_providers_and_invalid_box_names() {
+        assert!(Cli::try_parse_from(["devbox", "metrics", "--provider", "other"]).is_err());
+        assert!(Cli::try_parse_from(["devbox", "metrics", "--box", "Invalid"]).is_err());
+    }
+
+    #[test]
+    fn active_time_format_is_compact_and_bounded() {
+        assert_eq!(human_duration(0.0), "0m");
+        assert_eq!(human_duration(90.0), "2m");
+        assert_eq!(human_duration(3_600.0), "1h");
+        assert_eq!(human_duration(3_900.0), "1h 5m");
+        assert_eq!(human_duration(-10.0), "0m");
+        assert_eq!(human_duration(f64::NAN), "0m");
     }
 }

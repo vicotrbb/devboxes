@@ -31,6 +31,13 @@ workspace:
     externalTrafficPolicy: Cluster
     loadBalancerSourceRanges:
       - 192.0.2.0/24
+
+insights:
+  enabled: true
+  storage:
+    storageClass: fast-rwo
+    size: 2Gi
+    retainOnDelete: true
 ```
 
 ```bash
@@ -38,12 +45,12 @@ kubectl create namespace devboxes
 # Create devboxes-auth and devboxes-workspace here, as described below.
 
 helm upgrade --install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
-  --version 0.2.1 \
+  --version 0.3.0 \
   --namespace devboxes \
   --values values.yaml
 ```
 
-Before the Helm command, create `devboxes-auth` and `devboxes-workspace` through your secret manager or the commands in [credentials](credentials.md). Do not place secret values in the Helm values file. Replace the example source range with the actual trusted client network.
+Before the Helm command, create `devboxes-auth` and `devboxes-workspace` through your secret manager or the commands in [credentials](credentials.md). Do not place secret values in the Helm values file. Replace the example source range with the actual trusted client network. Insights remains optional; when enabled, use a low-latency RWO volume with reliable SQLite locking.
 
 ## 3. Warm the workspace image when startup latency matters
 
@@ -109,6 +116,7 @@ kubectl top pod -n devboxes -l devboxes.bonalab.org/name=atlas
 - Use `devbox stop` instead of deleting a box when you plan to resume with the same environment.
 - Avoid `--purge` unless the home volume is intentionally disposable.
 - Keep one controller replica unless you have tested the operational behavior of multiple writers. Kubernetes remains the source of truth, but the supported default is one trusted operator and one controller replica.
+- When Insights is enabled, keep exactly one controller replica, monitor collector freshness and queue loss, and use the online backup export for its database.
 - Track image, chart, and CLI versions together, then read the changelog before every upgrade.
 
 See the Kubernetes documentation for [resource requests and pod quality of service](https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/), [StorageClass binding modes](https://kubernetes.io/docs/concepts/storage/storage-classes/), [container image caching](https://kubernetes.io/docs/concepts/containers/images/), and [Service traffic policies](https://kubernetes.io/docs/concepts/services-networking/service/).

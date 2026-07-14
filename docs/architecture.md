@@ -27,6 +27,7 @@ The controller translates lifecycle operations into native Kubernetes resources 
 - One `Deployment` per devbox for disposable compute.
 - One `Service` per devbox for SSH through `LoadBalancer` or `NodePort`.
 - One `PersistentVolumeClaim` per devbox, mounted at `/home/dev`.
+- When Insights is enabled, one scoped ingest `Secret` per devbox and one central Insights `PersistentVolumeClaim` for the controller.
 
 Resource names are deterministic (`devbox-NAME`), and labels plus annotations carry controller ownership, creation time, expiry, preset, repository, and retained storage size.
 
@@ -37,6 +38,10 @@ Disconnecting SSH leaves the pod and tmux session running. Stopping scales the D
 The SSH host key lives on the persistent volume. Recreating a previously deleted devbox with the same name therefore retains both files and host identity. A purge intentionally creates a new identity.
 
 TTL expiry is equivalent to `stop`: it scales compute to zero and never deletes data. Starting a stopped devbox renews its original TTL from the new start time.
+
+When Insights is enabled, persistence has two additional layers. A bounded SQLite outbox lives on each workspace home PVC, so accepted local metric batches survive workspace and controller outages. The controller stores sanitized, deduplicated points, Git aggregates, collector health, and time rollups in a separate central SQLite PVC. Ordinary workspace deletion and home purge do not remove central history. Insights history has its own explicit purge operation.
+
+A UUID instance identity is stored on both the Deployment and home PVC. Retaining and reusing the PVC preserves that identity. Purging the PVC and recreating the box creates a new identity. This separates a box name from the lifetime of the storage that produced its data.
 
 ## Readiness
 
@@ -49,6 +54,7 @@ The workspace entrypoint refuses to start without `SSH_AUTHORIZED_KEYS`. It prep
 - Controller RBAC is a Role scoped to the release namespace; it cannot manage cluster-wide resources.
 - Workspace service accounts have no RBAC binding and do not mount Kubernetes API tokens.
 - Workspace Secrets are mounted read-only with mode `0440`, scoped to the workspace group, and are not embedded in either image.
+- Each Insights ingest credential is HMAC-signed, write-only, scoped to one box and UUID instance, and stored in a dedicated namespaced Secret. It is never a controller, browser, or CLI credential.
 - The controller runs as a non-root user with a read-only root filesystem and all Linux capabilities dropped.
 - The workspace runs as root during initialization, then exposes only the unprivileged `dev` SSH user. Password login and root login are disabled.
 - The trusted `dev` user has passwordless `sudo`. The pod adds only `AUDIT_WRITE`, `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`, `SETUID`, and `SYS_CHROOT`; `AUDIT_WRITE` lets OpenSSH allocate audited PTYs, while `SYS_ADMIN` and privileged mode are not used.
@@ -75,8 +81,8 @@ A retained PVC is expanded when a larger preset is requested, subject to the Sto
 
 ## Availability
 
-The controller is stateless apart from signed sessions and the short-lived in-memory
-authorization-code store. Restarting it cancels pending CLI approvals but does not affect
-issued tokens or devbox state. The chart defaults to one replica because create operations
-and one-time code consumption are optimized for a single trusted operator. The Kubernetes
-API remains the source of truth.
+With Insights disabled, the controller is stateless apart from signed sessions and the short-lived in-memory authorization-code store. Restarting it cancels pending CLI approvals but does not affect issued tokens or devbox state.
+
+With Insights enabled, the controller also owns a stateful SQLite database. The chart requires one controller replica and uses a `Recreate` strategy so one pod owns the database volume at a time. Kubernetes remains the source of truth for workspace lifecycle, while the Insights database is the source of truth for retained telemetry and aggregate activity.
+
+Insights does not restart active legacy workspaces during an upgrade. They expose `restart_required` until a normal stop and start installs the sidecar and its current scoped credential. Stopped workspaces are reconciled in place, and every start reconciles the template before compute is scaled up.

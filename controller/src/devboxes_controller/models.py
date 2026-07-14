@@ -29,6 +29,14 @@ class DevboxState(StrEnum):
     DEGRADED = "degraded"
 
 
+class InsightsState(StrEnum):
+    """Describe whether a workspace collector is active or awaits a safe restart."""
+
+    DISABLED = "disabled"
+    COLLECTING = "collecting"
+    RESTART_REQUIRED = "restart_required"
+
+
 class CreateDevboxRequest(BaseModel):
     """Validate a request to create a devbox."""
 
@@ -79,6 +87,8 @@ class Devbox(BaseModel):
     restarts: int = 0
     storage_size: str
     message: str | None = None
+    instance_id: str | None = None
+    insights_state: InsightsState = InsightsState.DISABLED
 
 
 class DevboxList(BaseModel):

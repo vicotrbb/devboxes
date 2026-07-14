@@ -1,8 +1,11 @@
 """Manage the Kubernetes resources that implement devbox lifecycles."""
 
 import asyncio
+import base64
 import builtins
+import hmac
 import logging
+import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -11,18 +14,23 @@ from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 from kubernetes.utils.quantity import parse_quantity
 
+from .auth import Authenticator
 from .config import Settings
 from .models import (
     CreateDevboxRequest,
     DeleteResult,
     Devbox,
     DevboxState,
+    InsightsState,
     Preset,
 )
 from .resources import (
     ANNOTATION_AUTO_STOPPED_AT,
     ANNOTATION_CREATED_AT,
     ANNOTATION_EXPIRES_AT,
+    ANNOTATION_INSIGHTS_STATE,
+    ANNOTATION_INSIGHTS_TEMPLATE_HASH,
+    ANNOTATION_INSTANCE_ID,
     ANNOTATION_PRESET,
     ANNOTATION_REPOSITORY,
     ANNOTATION_STORAGE,
@@ -62,6 +70,7 @@ class DevboxManager:
             self._load_config(settings)
         self.apps = apps_api or client.AppsV1Api()
         self.core = core_api or client.CoreV1Api()
+        self.authenticator = Authenticator(settings)
 
     @staticmethod
     def _load_config(settings: Settings) -> None:
@@ -96,9 +105,19 @@ class DevboxManager:
         pvc_name = f"{name}-home"
         desired_storage = PRESETS[request.preset]["storage"]
         existing_pvc = await self._read_pvc(pvc_name)
+        instance_id = (
+            await self._instance_id(pvc_name, existing_pvc)
+            if self.settings.insights_enabled
+            else None
+        )
         storage_size = desired_storage
         if existing_pvc is None:
-            pvc = build_pvc(request, self.settings.namespace, self.settings.storage_class)
+            pvc = build_pvc(
+                request,
+                self.settings.namespace,
+                self.settings.storage_class,
+                instance_id,
+            )
             await asyncio.to_thread(
                 self.core.create_namespaced_persistent_volume_claim,
                 self.settings.namespace,
@@ -118,6 +137,18 @@ class DevboxManager:
             else:
                 storage_size = current_storage
 
+        insights_credential = (
+            self.authenticator.issue_insights_token(instance_id, request.name)
+            if instance_id is not None
+            else None
+        )
+        insights_secret_name = None
+        if insights_credential is not None and instance_id is not None:
+            insights_secret_name = await self._ensure_insights_secret(
+                request.name,
+                instance_id,
+                insights_credential,
+            )
         deployment = build_deployment(
             request,
             self.settings.namespace,
@@ -126,6 +157,15 @@ class DevboxManager:
             self.settings.workspace_service_account_name,
             self.settings.workspace_priority_class,
             self.settings.image_pull_secret,
+            instance_id=instance_id,
+            insights_enabled=self.settings.insights_enabled,
+            insights_endpoint=self.settings.insights_controller_url,
+            insights_credential=insights_credential,
+            insights_secret_name=insights_secret_name,
+            insights_scan_interval_seconds=self.settings.insights_agent_scan_interval_seconds,
+            insights_repository_depth=self.settings.insights_agent_repository_depth,
+            insights_max_queue_bytes=self.settings.insights_agent_max_queue_bytes,
+            insights_max_queue_age_seconds=self.settings.insights_agent_max_queue_age_seconds,
         )
         deployment["metadata"]["annotations"][ANNOTATION_STORAGE] = storage_size
         service = build_service(
@@ -138,12 +178,12 @@ class DevboxManager:
             self.settings.workspace_external_traffic_policy,
             self.settings.workspace_load_balancer_source_ranges,
         )
-        await asyncio.to_thread(
-            self.apps.create_namespaced_deployment,
-            self.settings.namespace,
-            deployment,
-        )
         try:
+            await asyncio.to_thread(
+                self.apps.create_namespaced_deployment,
+                self.settings.namespace,
+                deployment,
+            )
             await asyncio.to_thread(
                 self.core.create_namespaced_service,
                 self.settings.namespace,
@@ -151,6 +191,8 @@ class DevboxManager:
             )
         except Exception:
             await self._delete_deployment(name)
+            if insights_secret_name:
+                await self._delete_secret(insights_secret_name)
             raise
         return await self.get(request.name)
 
@@ -229,6 +271,7 @@ class DevboxManager:
                     resource,
                     self.settings.namespace,
                 )
+                deployment = await self._prepare_insights_template(deployment)
                 annotations = deployment.metadata.annotations or {}
                 ttl_hours = _ttl_hours(
                     annotations.get(ANNOTATION_TTL_HOURS),
@@ -264,6 +307,49 @@ class DevboxManager:
             raise
         return await self.get(name)
 
+    async def reconcile_insights(self) -> builtins.list[str]:
+        """Reconcile identity and safe collector state without restarting active workspaces."""
+        if not self.settings.insights_enabled:
+            return []
+        selector = f"{LABEL_MANAGED_BY}={MANAGED_BY}"
+        deployments = await asyncio.to_thread(
+            self.apps.list_namespaced_deployment,
+            self.settings.namespace,
+            label_selector=selector,
+        )
+        changed: builtins.list[str] = []
+        for deployment in deployments.items:
+            name = deployment.metadata.labels.get(LABEL_NAME)
+            if not name:
+                continue
+            if (deployment.spec.replicas or 0) == 0:
+                prepared = await self._prepare_insights_template(deployment)
+                if prepared is not deployment:
+                    changed.append(name)
+            else:
+                annotations = deployment.metadata.annotations or {}
+                desired, instance_id = await self._desired_insights_deployment(deployment)
+                if not _insights_template_matches(deployment, desired) and (
+                    annotations.get(ANNOTATION_INSIGHTS_STATE)
+                    != InsightsState.RESTART_REQUIRED.value
+                    or annotations.get(ANNOTATION_INSTANCE_ID) != instance_id
+                ):
+                    await asyncio.to_thread(
+                        self.apps.patch_namespaced_deployment,
+                        deployment.metadata.name,
+                        self.settings.namespace,
+                        {
+                            "metadata": {
+                                "annotations": {
+                                    ANNOTATION_INSIGHTS_STATE: InsightsState.RESTART_REQUIRED.value,
+                                    ANNOTATION_INSTANCE_ID: instance_id,
+                                }
+                            }
+                        },
+                    )
+                    changed.append(name)
+        return changed
+
     async def delete(self, name: str, purge: bool) -> DeleteResult:
         """Delete compute and SSH resources, optionally deleting storage."""
         resource = resource_name(name)
@@ -272,6 +358,7 @@ class DevboxManager:
         await asyncio.gather(
             self._delete_deployment(resource),
             self._delete_service(f"{resource}-ssh"),
+            self._delete_secret(f"{resource}-insights"),
         )
         if purge:
             await self._delete_pvc(f"{resource}-home")
@@ -329,6 +416,167 @@ class DevboxManager:
                 return None
             raise
 
+    async def _instance_id(self, pvc_name: str, pvc: Any | None) -> str:
+        if pvc is not None:
+            annotations = getattr(getattr(pvc, "metadata", None), "annotations", None) or {}
+            candidate = annotations.get(ANNOTATION_INSTANCE_ID)
+            if candidate and _valid_instance_id(candidate):
+                return str(candidate)
+        instance_id = str(uuid.uuid4())
+        if pvc is not None:
+            await asyncio.to_thread(
+                self.core.patch_namespaced_persistent_volume_claim,
+                pvc_name,
+                self.settings.namespace,
+                {"metadata": {"annotations": {ANNOTATION_INSTANCE_ID: instance_id}}},
+            )
+        return instance_id
+
+    async def _ensure_insights_secret(
+        self,
+        box_name: str,
+        instance_id: str,
+        credential: str,
+    ) -> str:
+        secret_name = f"{resource_name(box_name)}-insights"
+        body = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": secret_name,
+                "namespace": self.settings.namespace,
+                "labels": {
+                    LABEL_MANAGED_BY: MANAGED_BY,
+                    LABEL_NAME: box_name,
+                },
+                "annotations": {ANNOTATION_INSTANCE_ID: instance_id},
+            },
+            "type": "Opaque",
+            "stringData": {"credential": credential},
+        }
+        try:
+            existing = await asyncio.to_thread(
+                self.core.read_namespaced_secret,
+                secret_name,
+                self.settings.namespace,
+            )
+        except ApiException as error:
+            if error.status != 404:
+                raise
+            await asyncio.to_thread(
+                self.core.create_namespaced_secret,
+                self.settings.namespace,
+                body,
+            )
+        else:
+            annotations = getattr(getattr(existing, "metadata", None), "annotations", None) or {}
+            data = getattr(existing, "data", None)
+            encoded = data.get("credential") if isinstance(data, dict) else None
+            try:
+                current = base64.b64decode(encoded, validate=True).decode() if encoded else ""
+            except (TypeError, ValueError, UnicodeDecodeError):
+                current = ""
+            if annotations.get(ANNOTATION_INSTANCE_ID) != instance_id or not hmac.compare_digest(
+                current, credential
+            ):
+                await asyncio.to_thread(
+                    self.core.patch_namespaced_secret,
+                    secret_name,
+                    self.settings.namespace,
+                    {
+                        "metadata": {"annotations": {ANNOTATION_INSTANCE_ID: instance_id}},
+                        "stringData": {"credential": credential},
+                    },
+                )
+        return secret_name
+
+    async def _prepare_insights_template(self, deployment: Any) -> Any:
+        if not self.settings.insights_enabled:
+            return deployment
+        desired, instance_id = await self._desired_insights_deployment(deployment)
+        annotations = deployment.metadata.annotations or {}
+        if _insights_template_matches(deployment, desired):
+            if annotations.get(ANNOTATION_INSIGHTS_STATE) == InsightsState.COLLECTING.value:
+                return deployment
+            await asyncio.to_thread(
+                self.apps.patch_namespaced_deployment,
+                deployment.metadata.name,
+                self.settings.namespace,
+                {
+                    "metadata": {
+                        "annotations": {
+                            ANNOTATION_INSTANCE_ID: instance_id,
+                            ANNOTATION_INSIGHTS_STATE: InsightsState.COLLECTING.value,
+                        }
+                    }
+                },
+            )
+            return await asyncio.to_thread(
+                self.apps.read_namespaced_deployment,
+                deployment.metadata.name,
+                self.settings.namespace,
+            )
+        await asyncio.to_thread(
+            self.apps.patch_namespaced_deployment,
+            deployment.metadata.name,
+            self.settings.namespace,
+            {
+                "metadata": {
+                    "annotations": {
+                        ANNOTATION_INSTANCE_ID: instance_id,
+                        ANNOTATION_INSIGHTS_STATE: InsightsState.COLLECTING.value,
+                        ANNOTATION_INSIGHTS_TEMPLATE_HASH: desired["metadata"]["annotations"][
+                            ANNOTATION_INSIGHTS_TEMPLATE_HASH
+                        ],
+                    }
+                },
+                "spec": {"template": desired["spec"]["template"]},
+            },
+        )
+        return await asyncio.to_thread(
+            self.apps.read_namespaced_deployment,
+            deployment.metadata.name,
+            self.settings.namespace,
+        )
+
+    async def _desired_insights_deployment(self, deployment: Any) -> tuple[dict[str, Any], str]:
+        annotations = deployment.metadata.annotations or {}
+        name = deployment.metadata.labels[LABEL_NAME]
+        pvc_name = f"{resource_name(name)}-home"
+        pvc = await self._read_pvc(pvc_name)
+        instance_id = await self._instance_id(pvc_name, pvc)
+        request = CreateDevboxRequest(
+            name=name,
+            preset=Preset(annotations.get(ANNOTATION_PRESET, Preset.SMALL.value)),
+            ttl_hours=_ttl_hours(
+                annotations.get(ANNOTATION_TTL_HOURS),
+                self.settings.default_ttl_hours,
+                self.settings.max_ttl_hours,
+            ),
+            repository=annotations.get(ANNOTATION_REPOSITORY),
+        )
+        credential = self.authenticator.issue_insights_token(instance_id, name)
+        secret_name = await self._ensure_insights_secret(name, instance_id, credential)
+        desired = build_deployment(
+            request,
+            self.settings.namespace,
+            self.settings.workspace_image,
+            self.settings.workspace_secret_name,
+            self.settings.workspace_service_account_name,
+            self.settings.workspace_priority_class,
+            self.settings.image_pull_secret,
+            instance_id=instance_id,
+            insights_enabled=True,
+            insights_endpoint=self.settings.insights_controller_url,
+            insights_credential=credential,
+            insights_secret_name=secret_name,
+            insights_scan_interval_seconds=self.settings.insights_agent_scan_interval_seconds,
+            insights_repository_depth=self.settings.insights_agent_repository_depth,
+            insights_max_queue_bytes=self.settings.insights_agent_max_queue_bytes,
+            insights_max_queue_age_seconds=self.settings.insights_agent_max_queue_age_seconds,
+        )
+        return desired, instance_id
+
     async def _delete_deployment(self, name: str) -> None:
         await self._ignore_not_found(
             self.apps.delete_namespaced_deployment,
@@ -348,6 +596,14 @@ class DevboxManager:
     async def _delete_pvc(self, name: str) -> None:
         await self._ignore_not_found(
             self.core.delete_namespaced_persistent_volume_claim,
+            name,
+            self.settings.namespace,
+            body=client.V1DeleteOptions(),
+        )
+
+    async def _delete_secret(self, name: str) -> None:
+        await self._ignore_not_found(
+            self.core.delete_namespaced_secret,
             name,
             self.settings.namespace,
             body=client.V1DeleteOptions(),
@@ -389,6 +645,8 @@ class DevboxManager:
             restarts=restarts,
             storage_size=annotations.get(ANNOTATION_STORAGE, "20Gi"),
             message=message,
+            instance_id=annotations.get(ANNOTATION_INSTANCE_ID),
+            insights_state=_insights_state(self.settings.insights_enabled, deployment, desired),
         )
 
 
@@ -476,3 +734,53 @@ def _state(
     if pod_ready:
         return DevboxState.STARTING, "Waiting for an SSH service address"
     return DevboxState.STARTING, "Preparing workspace and SSH"
+
+
+def _valid_instance_id(value: str) -> bool:
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        return False
+    return parsed.version == 4 and str(parsed) == value
+
+
+def _has_insights_sidecar(deployment: Any) -> bool:
+    containers = getattr(
+        getattr(getattr(deployment, "spec", None), "template", None),
+        "spec",
+        None,
+    )
+    return any(
+        getattr(container, "name", None) == "insights-agent"
+        for container in (getattr(containers, "containers", None) or [])
+    )
+
+
+def _insights_template_matches(deployment: Any, desired: dict[str, Any]) -> bool:
+    if not _has_insights_sidecar(deployment):
+        return False
+    desired_annotations = desired["metadata"]["annotations"]
+    desired_hash = desired_annotations.get(ANNOTATION_INSIGHTS_TEMPLATE_HASH)
+    deployment_annotations = deployment.metadata.annotations or {}
+    template = getattr(getattr(deployment, "spec", None), "template", None)
+    template_annotations = getattr(getattr(template, "metadata", None), "annotations", None) or {}
+    return bool(
+        desired_hash
+        and deployment_annotations.get(ANNOTATION_INSIGHTS_TEMPLATE_HASH) == desired_hash
+        and template_annotations.get(ANNOTATION_INSIGHTS_TEMPLATE_HASH) == desired_hash
+        and deployment_annotations.get(ANNOTATION_INSTANCE_ID)
+        == desired_annotations.get(ANNOTATION_INSTANCE_ID)
+    )
+
+
+def _insights_state(enabled: bool, deployment: Any, desired: int) -> InsightsState:
+    if not enabled:
+        return InsightsState.DISABLED
+    annotations = deployment.metadata.annotations or {}
+    if annotations.get(ANNOTATION_INSIGHTS_STATE) == InsightsState.RESTART_REQUIRED.value:
+        return InsightsState.RESTART_REQUIRED
+    if _has_insights_sidecar(deployment):
+        return InsightsState.COLLECTING
+    if desired > 0:
+        return InsightsState.RESTART_REQUIRED
+    return InsightsState.RESTART_REQUIRED

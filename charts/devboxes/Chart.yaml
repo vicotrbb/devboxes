@@ -2,8 +2,8 @@ apiVersion: v2
 name: devboxes
 description: Self-hosted, ephemeral development environments on Kubernetes
 type: application
-version: 0.2.1
-appVersion: "0.2.1"
+version: 0.3.0
+appVersion: "0.3.0"
 kubeVersion: ">=1.29.0-0"
 home: https://github.com/vicotrbb/devboxes
 icon: https://raw.githubusercontent.com/vicotrbb/devboxes/main/docs/assets/devboxes-mark.svg
@@ -16,7 +16,9 @@ annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/category: integration-delivery
   artifacthub.io/changes: |
-    - kind: fixed
-      description: Honor DEVBOX_TOKEN during non-interactive CLI login
-    - kind: fixed
-      description: Trust operating-system certificate roots in the CLI
+    - kind: added
+      description: Add privacy-bounded Devboxes Insights for AI metrics and aggregate Git activity
+    - kind: added
+      description: Add dashboard and CLI summary, status, activity, export, and purge workflows
+    - kind: security
+      description: Add dual allowlists and scoped per-workspace ingest credentials

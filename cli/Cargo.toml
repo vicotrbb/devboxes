@@ -1,6 +1,6 @@
 [package]
 name = "devbox-cli"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.96"
 description = "Terminal client for self-hosted Kubernetes development environments"

@@ -38,6 +38,7 @@ mkdir -p \
   "$HOME_DIR/.ssh" \
   "$HOST_KEY_DIR" \
   "$HOME_DIR/workspace"
+install -o dev -g dev -m 0700 -d "$HOME_DIR/.devbox/insights"
 install -o root -g root -m 0755 -d /run/sshd
 chown dev:dev "$HOME_DIR"
 chown -R dev:dev "$HOME_DIR/.cargo" "$HOME_DIR/.local" "$HOME_DIR/.ssh" "$HOME_DIR/workspace"
@@ -72,6 +73,12 @@ as_dev git config --global credential.https://github.com.helper '!gh auth git-cr
 as_dev git config --global credential.https://gist.github.com.helper '!gh auth git-credential'
 
 install -o dev -g dev -m 0700 -d "$HOME_DIR/.codex" "$HOME_DIR/.claude"
+if [[ "${DEVBOXES_INSIGHTS_ENABLED:-false}" == true ]]; then
+  install -o root -g root -m 0755 -d /etc/codex
+  install -o root -g root -m 0644 \
+    /usr/local/share/devboxes/codex-insights.toml \
+    /etc/codex/config.toml
+fi
 if [[ ! -s "$HOME_DIR/.codex/auth.json" && -s "$SECRETS_DIR/CODEX_AUTH_JSON" ]]; then
   install -o dev -g dev -m 0600 "$SECRETS_DIR/CODEX_AUTH_JSON" "$HOME_DIR/.codex/auth.json"
 elif [[ ! -s "$HOME_DIR/.codex/auth.json" && -s "$SECRETS_DIR/CODEX_ACCESS_TOKEN" ]]; then

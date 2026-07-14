@@ -248,3 +248,19 @@ def test_default_signing_key_is_derived_and_rotation_revokes_tokens() -> None:
     assert expires_in == 2_592_000
     assert same.validate_cli_token(token) == "operator"
     assert rotated.validate_cli_token(token) is None
+
+
+def test_insights_tokens_are_instance_scoped_domain_separated_and_rotatable() -> None:
+    instance_id = "99999999-9999-4999-8999-999999999999"
+    first = Authenticator(settings(insights_signing_key=None))
+    same = Authenticator(settings(insights_signing_key=None))
+    rotated = Authenticator(settings(insights_signing_key="r" * 32))
+
+    token = first.issue_insights_token(instance_id, "atlas")
+    cli_token, _ = first.issue_cli_token("operator")
+
+    assert same.validate_insights_token(token) == (instance_id, "atlas")
+    assert rotated.validate_insights_token(token) is None
+    assert first.validate_insights_token(token.replace("atlas", "other")) is None
+    assert first.validate_insights_token(cli_token) is None
+    assert MASTER_TOKEN not in token

@@ -47,6 +47,8 @@ cleanup() {
     kubectl --context "kind-$cluster" get all,pvc -n "$namespace" -o wide >&2 || true
     kubectl --context "kind-$cluster" describe pods -n "$namespace" >&2 || true
     kubectl --context "kind-$cluster" logs -n "$namespace" deployment/devboxes --tail=200 >&2 || true
+    kubectl --context "kind-$cluster" logs -n "$namespace" deployment/devbox-smoke \
+      -c insights-agent --tail=200 >&2 || true
     if [[ -f "$temporary_directory/controller-port-forward.log" ]]; then
       cat "$temporary_directory/controller-port-forward.log" >&2
     fi
@@ -100,6 +102,143 @@ wait_for_http() {
 
 api() {
   curl -fsS -H "Authorization: Bearer $token" "$@"
+}
+
+start_controller_port_forward() {
+  if [[ -n "$controller_port_forward" ]]; then
+    kill "$controller_port_forward" >/dev/null 2>&1 || true
+  fi
+  kubectl -n "$namespace" port-forward service/devboxes "$controller_port:8000" \
+    >"$temporary_directory/controller-port-forward.log" 2>&1 &
+  controller_port_forward=$!
+  wait_for_http \
+    "http://127.0.0.1:$controller_port/health" \
+    "$controller_port_forward" \
+    "$temporary_directory/controller-port-forward.log"
+}
+
+write_otlp_fixture() {
+  output="$1"
+  provider="$2"
+  nonce="$3"
+  token_total="$4"
+  python3 - "$output" "$provider" "$nonce" "$token_total" <<'PY'
+import json
+import sys
+import time
+
+output, provider, nonce, token_total = sys.argv[1:]
+observed = str(time.time_ns() + int(nonce))
+tokens = int(token_total)
+
+
+def attribute(key, value):
+    return {"key": key, "value": {"stringValue": value}}
+
+
+def point(value, **attributes):
+    result = {"timeUnixNano": observed, "asInt": value}
+    if attributes:
+        result["attributes"] = [attribute(key, item) for key, item in attributes.items()]
+    return result
+
+
+def sum_metric(name, points, unit="1"):
+    return {
+        "name": name,
+        "unit": unit,
+        "sum": {
+            "aggregationTemporality": 1,
+            "isMonotonic": True,
+            "dataPoints": points,
+        },
+    }
+
+
+if provider == "codex":
+    input_tokens = max(1, tokens * 2 // 3)
+    output_tokens = tokens - input_tokens
+    metrics = [
+        sum_metric("codex.process.start", [point(1, start_type="cli")]),
+        sum_metric(
+            "codex.turn.token_usage",
+            [
+                point(input_tokens, token_type="input", model="e2e-codex"),
+                point(output_tokens, token_type="output", model="e2e-codex"),
+                point(tokens, token_type="total", model="e2e-codex"),
+            ],
+            "tokens",
+        ),
+    ]
+    service = "codex_cli_rs"
+    version = "0.144.0"
+else:
+    metrics = [
+        sum_metric("claude_code.session.count", [point(1)]),
+        sum_metric(
+            "claude_code.token.usage",
+            [
+                point(tokens - 3, type="input", model="e2e-claude"),
+                point(3, type="output", model="e2e-claude"),
+            ],
+            "tokens",
+        ),
+        {
+            "name": "claude_code.cost.usage",
+            "unit": "USD",
+            "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": False,
+                "dataPoints": [{"timeUnixNano": observed, "asDouble": 0.02}],
+            },
+        },
+        {
+            "name": "claude_code.active_time.total",
+            "unit": "s",
+            "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": False,
+                "dataPoints": [{"timeUnixNano": observed, "asDouble": 60.0}],
+            },
+        },
+        sum_metric("claude_code.lines_of_code.count", [point(4, type="added")], "lines"),
+    ]
+    service = "claude-code"
+    version = "2.1.205"
+
+payload = {
+    "resourceMetrics": [
+        {
+            "resource": {
+                "attributes": [
+                    attribute("service.name", service),
+                    attribute("service.version", version),
+                ]
+            },
+            "scopeMetrics": [{"metrics": metrics}],
+        }
+    ]
+}
+with open(output, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+PY
+}
+
+send_otlp_fixture() {
+  fixture="$1"
+  for _ in {1..30}; do
+    if kubectl -n "$namespace" exec -i deployment/devbox-smoke -c devbox -- \
+      curl -fsS \
+        -H 'Content-Type: application/json' \
+        --data-binary @- \
+        http://127.0.0.1:4318/v1/metrics \
+      <"$fixture" >/dev/null; then
+      return
+    fi
+    sleep 1
+  done
+  printf 'error: local Insights receiver did not accept OTLP metrics\n' >&2
+  return 1
 }
 
 cli() {
@@ -166,6 +305,8 @@ if [[ -n "$published_version" ]]; then
   DEVBOXES_CHART_SOURCE=oci \
   DEVBOXES_VERSION="$published_version" \
     scripts/install.sh \
+    --set insights.enabled=true \
+    --set insights.agent.scanIntervalSeconds=15 \
     --set workspace.sshService.type=NodePort \
     --set workspace.sshService.host=dev-node.example.test
   controller_image="$(kubectl -n "$namespace" get deployment devboxes -o jsonpath='{.spec.template.spec.containers[0].image}')"
@@ -184,6 +325,8 @@ else
     --set controller.image.pullPolicy=Never \
     --set workspace.image.repository=devboxes-workspace \
     --set workspace.image.tag=e2e \
+    --set insights.enabled=true \
+    --set insights.agent.scanIntervalSeconds=15 \
     --set workspace.sshService.type=NodePort \
     --set workspace.sshService.host=dev-node.example.test
 fi
@@ -202,13 +345,7 @@ preserved_github_token="$(
 )"
 test "$preserved_github_token" = preserved-runtime-test-value
 
-kubectl -n "$namespace" port-forward service/devboxes "$controller_port:8000" \
-  >"$temporary_directory/controller-port-forward.log" 2>&1 &
-controller_port_forward=$!
-wait_for_http \
-  "http://127.0.0.1:$controller_port/health" \
-  "$controller_port_forward" \
-  "$temporary_directory/controller-port-forward.log"
+start_controller_port_forward
 api "http://127.0.0.1:$controller_port/api/v1/whoami" >/dev/null
 if [[ -n "$released_cli" ]]; then
   cli --json list | jq -e 'type == "array"' >/dev/null
@@ -296,6 +433,134 @@ for _ in {1..30}; do
   sleep 1
 done
 test "$state" = ready
+container_count="$(
+  kubectl -n "$namespace" get deployment devbox-smoke -o json \
+    | jq '.spec.template.spec.containers | length'
+)"
+test "$container_count" = 2
+instance_id="$(
+  kubectl -n "$namespace" get deployment devbox-smoke -o json \
+    | jq -r '.metadata.annotations["insights.devboxes.bonalab.org/instance-id"]'
+)"
+pvc_instance_id="$(
+  kubectl -n "$namespace" get pvc devbox-smoke-home -o json \
+    | jq -r '.metadata.annotations["insights.devboxes.bonalab.org/instance-id"]'
+)"
+test "$instance_id" = "$pvc_instance_id"
+test "$instance_id" != null
+credential_secret="$(
+  kubectl -n "$namespace" get deployment devbox-smoke -o json \
+    | jq -r '.spec.template.spec.containers[]
+      | select(.name == "insights-agent")
+      | .env[]
+      | select(.name == "DEVBOXES_INSIGHTS_CREDENTIAL")
+      | .valueFrom.secretKeyRef.name'
+)"
+test "$credential_secret" = devbox-smoke-insights
+# The command substitution expands inside the workspace container.
+# shellcheck disable=SC2016
+kubectl -n "$namespace" exec deployment/devbox-smoke -c insights-agent -- \
+  sh -lc 'test "$(stat -c "%u:%g %a" /home/dev/.devbox/insights)" = "1000:1000 700"'
+if kubectl -n "$namespace" get deployment devbox-smoke -o yaml | grep -Fq "$token"; then
+  printf 'error: workspace Deployment exposed the controller access token\n' >&2
+  exit 1
+fi
+
+write_otlp_fixture "$temporary_directory/codex-otlp.json" codex 1 15
+write_otlp_fixture "$temporary_directory/claude-otlp.json" claude 2 10
+send_otlp_fixture "$temporary_directory/codex-otlp.json"
+send_otlp_fixture "$temporary_directory/claude-otlp.json"
+insights_summary=""
+for _ in {1..45}; do
+  insights_summary="$(
+    api "http://127.0.0.1:$controller_port/api/v1/insights/summary?since=24h"
+  )"
+  if jq -e '
+    .data.ai.totals.sessions == 2
+    and .data.ai.totals.tokens == 25
+    and .data.ai.totals.provider_reported_cost_usd == 0.02
+    and .data.ai.totals.active_seconds == 60
+    and .data.ai.totals.ai_lines == 4
+  ' <<<"$insights_summary" >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+jq -e '.data.ai.totals.tokens == 25' <<<"$insights_summary" >/dev/null
+
+send_otlp_fixture "$temporary_directory/codex-otlp.json"
+send_otlp_fixture "$temporary_directory/claude-otlp.json"
+sleep 3
+replayed_summary="$(
+  api "http://127.0.0.1:$controller_port/api/v1/insights/summary?since=24h"
+)"
+jq -e '.data.ai.totals.tokens == 25 and .data.ai.totals.sessions == 2' \
+  <<<"$replayed_summary" >/dev/null
+
+# Variables expand in the workspace shell, not in this process.
+# shellcheck disable=SC2016
+kubectl -n "$namespace" exec deployment/devbox-smoke -c devbox -- \
+  runuser -u dev -- env HOME=/home/dev /bin/bash -lc '
+  set -Eeuo pipefail
+  repository="$HOME/workspace/insights-e2e"
+  mkdir -p "$repository"
+  git -C "$repository" init -b main >/dev/null
+  git -C "$repository" config user.name "Sensitive E2E Name"
+  git -C "$repository" config user.email "sensitive-e2e@example.invalid"
+  printf "baseline\n" >"$repository/private-baseline-name.txt"
+  git -C "$repository" add .
+  git -C "$repository" commit -m "sensitive baseline message" >/dev/null
+'
+sleep 18
+# Variables expand in the workspace shell, not in this process.
+# shellcheck disable=SC2016
+kubectl -n "$namespace" exec deployment/devbox-smoke -c devbox -- \
+  runuser -u dev -- env HOME=/home/dev /bin/bash -lc '
+  set -Eeuo pipefail
+  repository="$HOME/workspace/insights-e2e"
+  printf "baseline\nobserved\n" >"$repository/private-baseline-name.txt"
+  git -C "$repository" add .
+  git -C "$repository" commit -m "sensitive observed message" >/dev/null
+  printf "baseline\nobserved\nworking tree\n" >"$repository/private-baseline-name.txt"
+'
+for _ in {1..45}; do
+  insights_summary="$(
+    api "http://127.0.0.1:$controller_port/api/v1/insights/summary?since=24h"
+  )"
+  if jq -e '
+    .data.code.commits == 1
+    and .data.code.additions == 1
+    and .data.code.working_tree.unstaged_files == 1
+  ' <<<"$insights_summary" >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+jq -e '.data.code.commits == 1 and .data.code.working_tree.unstaged_files == 1' \
+  <<<"$insights_summary" >/dev/null
+
+if [[ -n "$released_cli" ]]; then
+  cli --json metrics --since 24h \
+    | jq -e '.data.ai.totals.tokens == 25 and .data.code.commits == 1' >/dev/null
+  cli metrics --since 24h | grep -F 'INSIGHTS' >/dev/null
+  cli metrics export --since 24h --format csv \
+    | grep -F 'category,provider,metric,value' >/dev/null
+fi
+
+api -o "$temporary_directory/insights-backup.db" \
+  "http://127.0.0.1:$controller_port/api/v1/insights/export?format=sqlite"
+for sensitive_value in \
+  'Sensitive E2E Name' \
+  'sensitive-e2e@example.invalid' \
+  'sensitive baseline message' \
+  'sensitive observed message' \
+  'private-baseline-name.txt'; do
+  if grep -aFq "$sensitive_value" "$temporary_directory/insights-backup.db"; then
+    printf 'error: sensitive Git value reached the central Insights backup\n' >&2
+    exit 1
+  fi
+done
+
 node_port="$(kubectl -n "$namespace" get service devbox-smoke-ssh -o jsonpath='{.spec.ports[0].nodePort}')"
 test -n "$node_port"
 first_host_key="$(kubectl -n "$namespace" exec deployment/devbox-smoke -- cat /home/dev/.devbox/ssh/ssh_host_ed25519_key.pub)"
@@ -381,6 +646,65 @@ fi
 kill "$ssh_port_forward" >/dev/null 2>&1 || true
 ssh_port_forward=""
 
+write_otlp_fixture "$temporary_directory/queued-codex-otlp.json" codex 3 2
+kubectl -n "$namespace" scale deployment/devboxes --replicas=0 >/dev/null
+kubectl -n "$namespace" wait --for=delete pod -l app.kubernetes.io/component=controller --timeout=2m
+if [[ -n "$controller_port_forward" ]]; then
+  kill "$controller_port_forward" >/dev/null 2>&1 || true
+  controller_port_forward=""
+fi
+send_otlp_fixture "$temporary_directory/queued-codex-otlp.json"
+kubectl -n "$namespace" scale deployment/devbox-smoke --replicas=0 >/dev/null
+for _ in {1..30}; do
+  replicas="$(kubectl -n "$namespace" get deployment devbox-smoke -o jsonpath='{.status.replicas}')"
+  [[ -z "$replicas" || "$replicas" == 0 ]] && break
+  sleep 1
+done
+kubectl -n "$namespace" scale deployment/devbox-smoke --replicas=1 >/dev/null
+kubectl -n "$namespace" rollout status deployment/devbox-smoke --timeout="$workspace_timeout"
+queued_batches="$(
+  kubectl -n "$namespace" exec deployment/devbox-smoke -c insights-agent -- \
+    python3 -c 'import sqlite3; connection=sqlite3.connect("/home/dev/.devbox/insights/outbox.db"); print(connection.execute("SELECT COUNT(*) FROM batches").fetchone()[0]); connection.close()'
+)"
+test "$queued_batches" -gt 0
+restarted_instance_id="$(
+  kubectl -n "$namespace" get deployment devbox-smoke -o json \
+    | jq -r '.metadata.annotations["insights.devboxes.bonalab.org/instance-id"]'
+)"
+test "$restarted_instance_id" = "$instance_id"
+
+kubectl -n "$namespace" scale deployment/devboxes --replicas=1 >/dev/null
+kubectl -n "$namespace" rollout status deployment/devboxes --timeout=3m
+start_controller_port_forward
+for _ in {1..45}; do
+  insights_summary="$(
+    api "http://127.0.0.1:$controller_port/api/v1/insights/summary?since=24h"
+  )"
+  if jq -e '
+    .data.ai.totals.sessions == 3
+    and .data.ai.totals.tokens == 27
+    and .data.code.commits == 1
+  ' <<<"$insights_summary" >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+jq -e '.data.ai.totals.tokens == 27 and .data.code.commits == 1' \
+  <<<"$insights_summary" >/dev/null
+
+controller_pod="$(
+  kubectl -n "$namespace" get pod -l app.kubernetes.io/component=controller \
+    -o jsonpath='{.items[0].metadata.name}'
+)"
+kubectl -n "$namespace" delete pod "$controller_pod" --wait=true >/dev/null
+kubectl -n "$namespace" rollout status deployment/devboxes --timeout=3m
+start_controller_port_forward
+persisted_summary="$(
+  api "http://127.0.0.1:$controller_port/api/v1/insights/summary?since=24h"
+)"
+jq -e '.data.ai.totals.tokens == 27 and .data.code.commits == 1' \
+  <<<"$persisted_summary" >/dev/null
+
 if [[ -n "$released_cli" ]]; then
   cli --json stop smoke >/dev/null
 else
@@ -401,6 +725,12 @@ fi
 kubectl -n "$namespace" wait --for=delete deployment/devbox-smoke --timeout=2m
 kubectl -n "$namespace" wait --for=delete service/devbox-smoke-ssh --timeout=2m
 kubectl -n "$namespace" get pvc devbox-smoke-home >/dev/null
+kubectl -n "$namespace" wait --for=delete secret/devbox-smoke-insights --timeout=2m
+retained_summary="$(
+  api "http://127.0.0.1:$controller_port/api/v1/insights/summary?since=24h&box=smoke"
+)"
+jq -e '.data.ai.totals.tokens == 27 and .data.code.commits == 1' \
+  <<<"$retained_summary" >/dev/null
 
 if [[ -n "$released_cli" ]]; then
   cli --json create smoke --preset small --ttl 4 --no-wait >/dev/null
@@ -411,10 +741,30 @@ else
     "http://127.0.0.1:$controller_port/api/v1/devboxes" >/dev/null
 fi
 kubectl -n "$namespace" rollout status deployment/devbox-smoke --timeout="$workspace_timeout"
+recreated_instance_id="$(
+  kubectl -n "$namespace" get deployment devbox-smoke -o json \
+    | jq -r '.metadata.annotations["insights.devboxes.bonalab.org/instance-id"]'
+)"
+test "$recreated_instance_id" = "$instance_id"
 second_host_key="$(kubectl -n "$namespace" exec deployment/devbox-smoke -- cat /home/dev/.devbox/ssh/ssh_host_ed25519_key.pub)"
 test "$first_host_key" = "$second_host_key"
 kubectl -n "$namespace" exec deployment/devbox-smoke -- \
   grep -Fx persistent /home/dev/workspace/e2e-persistence >/dev/null
+
+if [[ -n "$released_cli" ]]; then
+  cli metrics purge --box smoke --yes >/dev/null
+else
+  api -X DELETE \
+    "http://127.0.0.1:$controller_port/api/v1/insights?box=smoke" >/dev/null
+fi
+purged_summary="$(
+  api "http://127.0.0.1:$controller_port/api/v1/insights/summary?since=24h&box=smoke"
+)"
+jq -e '
+  .data.ai.totals.tokens == 0
+  and .data.ai.totals.sessions == 0
+  and .data.code.commits == 0
+' <<<"$purged_summary" >/dev/null
 
 if [[ -n "$released_cli" ]]; then
   cli delete smoke --purge --yes >/dev/null
@@ -424,8 +774,8 @@ fi
 kubectl -n "$namespace" wait --for=delete pvc/devbox-smoke-home --timeout=2m
 
 if [[ -n "$published_version" ]]; then
-  printf 'Verified published %s chart, images, and CLI through clean install, API, PVC, NodePort %s, SSH, stop, retain, reuse, host identity, and purge.\n' \
+  printf 'Verified published %s chart, images, and CLI through clean install, Insights ingest, Git aggregation, deduplication, durable outboxes, central restart, API, PVC, NodePort %s, SSH, retain, reuse, and explicit purge.\n' \
     "$published_version" "$node_port"
 else
-  printf 'Verified clean install, API, PVC, NodePort %s, SSH, stop, retain, reuse, host identity, and purge.\n' "$node_port"
+  printf 'Verified clean install, Insights ingest, Git aggregation, deduplication, durable outboxes, central restart, API, PVC, NodePort %s, SSH, retain, reuse, and explicit purge.\n' "$node_port"
 fi

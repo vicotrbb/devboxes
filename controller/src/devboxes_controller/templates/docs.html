@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
     <title>Documentation · Devboxes</title>
-    <link rel="icon" href="/static/favicon.svg?v=0.2.1" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/styles.css?v=0.2.1">
-    <script src="/static/docs.js?v=0.2.1" defer></script>
+    <link rel="icon" href="/static/favicon.svg?v={{ version }}" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/styles.css?v={{ version }}">
+    <script src="/static/docs.js?v={{ version }}" defer></script>
   </head>
   <body class="docs-page">
     <a class="skip-link" href="#main-content">Skip to documentation</a>
@@ -19,6 +19,7 @@
         </a>
         <nav class="primary-nav" aria-label="Primary navigation">
           <a class="nav-link" href="/">Workbench</a>
+          <a class="nav-link" href="/insights">Insights</a>
           <a class="nav-link" href="/docs" aria-current="page">Docs</a>
         </nav>
       </div>
@@ -40,6 +41,7 @@
             <a href="#accounts">Accounts and tools</a>
             <a href="#daily-workflow">Daily workflow</a>
             <a href="#automation">Automation</a>
+            <a href="#insights">Insights</a>
             <a href="#dashboard">Dashboard</a>
             <a href="#commands">Command reference</a>
             <a href="#troubleshooting">Troubleshooting</a>
@@ -343,6 +345,39 @@ DEVBOX_TOKEN="$TOKEN_FROM_YOUR_SECRET_STORE" \
           </dl>
         </section>
 
+        <section class="docs-section" id="insights" tabindex="-1">
+          <h2>Understand work with Insights</h2>
+          {% if insights_enabled %}
+          <p>
+            Insights is enabled for this installation. It combines privacy-bounded local metrics
+            from Codex and Claude Code with aggregate Git activity observed after each repository's
+            first scan. Open the dashboard or query the same range from your terminal.
+          </p>
+          <div class="command-block">
+            <div class="command-heading">
+              <span>Inspect metrics and collector health</span>
+              <button class="command-copy" type="button" data-copy-target="insights-command" aria-label="Copy Insights commands">Copy</button>
+            </div>
+            <pre><code id="insights-command">devbox metrics --since 7d
+devbox metrics status
+devbox metrics activity --box atlas
+devbox metrics export --format csv &gt; insights.csv</code></pre>
+          </div>
+          <p>
+            Unsupported measurements remain not reported instead of becoming zero. Insights never
+            computes a productivity score or an AI-written percentage, and it does not collect
+            prompts, responses, commands, paths, file contents, Git authors, or commit messages.
+          </p>
+          <a class="button button-primary docs-workbench-link" href="/insights">Open Insights</a>
+          {% else %}
+          <p>
+            Insights is disabled for this installation. An operator can opt in through the Helm
+            <code>insights.enabled</code> value. No workspace metrics are centrally collected while
+            it remains disabled.
+          </p>
+          {% endif %}
+        </section>
+
         <section class="docs-section" id="dashboard" tabindex="-1">
           <h2>Use the browser workbench</h2>
           <p>
@@ -379,6 +414,7 @@ DEVBOX_TOKEN="$TOKEN_FROM_YOUR_SECRET_STORE" \
                 <tr><th scope="row"><code>devbox start NAME</code></th><td>Restarts compute and renews the TTL.</td><td><code>--json</code></td></tr>
                 <tr><th scope="row"><code>devbox stop NAME</code></th><td>Frees compute while retaining the home volume.</td><td><code>--json</code></td></tr>
                 <tr><th scope="row"><code>devbox delete NAME</code></th><td>Removes compute and its SSH service.</td><td><code>--purge</code>, <code>--yes</code></td></tr>
+                <tr><th scope="row"><code>devbox metrics</code></th><td>Queries opt-in AI metrics, Git aggregates, and collector health.</td><td><code>status</code>, <code>activity</code>, <code>export</code>, <code>purge</code></td></tr>
               </tbody>
             </table>
           </div>

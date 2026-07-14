@@ -31,7 +31,9 @@ Symptoms include `/ready` returning 503, CLI transport failures, or the dashboar
 4. Confirm the configured namespace matches the Helm release namespace.
 5. Review NetworkPolicy or API-server authorization denials.
 
-The controller needs namespaced access to Deployments, Services, Pods, and PVCs. It does not need cluster-wide RBAC.
+The controller needs namespaced access to Deployments, Services, Pods, PVCs, and its generated per-workspace Insights Secrets. It does not need cluster-wide RBAC.
+
+If Insights is enabled, inspect the central PVC and controller logs for SQLite open, migration, or locking errors. The volume must support normal filesystem locking and WAL. Avoid NFS-backed claims with unreliable lock semantics.
 
 ## Authentication fails
 
@@ -159,6 +161,25 @@ devbox ssh atlas
 ```
 
 Starting renews the original TTL. Use a longer TTL for sustained work, up to the controller maximum, or stop explicitly when idle.
+
+## Insights is empty, stale, or partial
+
+Start with the operator view and one workspace:
+
+```bash
+devbox metrics status --box atlas
+kubectl get deployment devbox-atlas -n devboxes \
+  -o jsonpath='{.spec.template.spec.containers[*].name}{"\n"}'
+kubectl logs deployment/devbox-atlas -n devboxes -c insights-agent --tail=100
+```
+
+`restart_required` means an active workspace predates the enabled or current collector template. Stop and start it normally. `partial` means no first batch has arrived or some selected measurements are unavailable. `stale` means the last heartbeat is too old. `data_loss_detected` means the durable outbox exceeded its byte or age bound and dropped oldest data.
+
+The collector is intentionally fail-open for SSH. A sidecar error does not make the main container unready. Check controller reachability from the pod, the generated per-workspace Secret reference, the central PVC, and the queue fields from `devbox metrics status`.
+
+Codex and Claude Code must run inside an Insights-enabled workspace and send metrics to the injected loopback endpoint. Provider telemetry can change between client versions; Devboxes validates the versions shipped in the workspace image. Git history cloned before the first scan is a baseline and is not imported. Only later reachable commits and current tracked working-tree aggregates appear.
+
+If central data is no longer wanted, use `devbox metrics purge --box NAME`. Workspace `delete --purge` removes the home PVC and local outbox but intentionally does not erase central history.
 
 ## Safe support bundle
 

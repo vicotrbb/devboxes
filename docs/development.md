@@ -73,7 +73,7 @@ The documentation check validates local Markdown targets and rejects em dash and
 | `controller/src/devboxes_controller/` | FastAPI routes, authentication, settings, Kubernetes lifecycle, schemas, and manifests |
 | `controller/tests/` | Unit and API regression tests plus the local UI preview fake |
 | `charts/devboxes/` | Helm defaults, values schema, namespaced RBAC, and Kubernetes templates |
-| `workspace/` | Workspace image, SSH entrypoint, shell setup, tmux, and secret bootstrap |
+| `workspace/` | Workspace image, SSH entrypoint, shell setup, tmux, secret bootstrap, and Insights agent |
 | `scripts/` | Installation, verification, release consistency, documentation, and Kind E2E tooling |
 | `docs/` | Public installation, usage, architecture, operations, troubleshooting, and development documentation |
 
@@ -87,7 +87,9 @@ helm template devboxes charts/devboxes --namespace devboxes
 kind create cluster --name devboxes
 ```
 
-The CI Kind job builds both images, loads them into a clean cluster, creates placeholder Secrets, installs the local chart, waits for rollout, and exercises the authenticated API, SSH, stop, retention, recreation, host identity, and purge lifecycle.
+The CI Kind job builds both images and the CLI, loads the images into a clean cluster, creates placeholder Secrets, and installs the local chart with Insights enabled. It exercises the authenticated API, SSH, scoped ingest Secret, provider-shaped OTLP batches, batch deduplication, Git baseline and activity, durable outbox during controller downtime, central database persistence, retained identity, CLI output and exports, explicit Insights purge, workspace recreation, host identity, and final PVC purge.
+
+Privacy tests use fixtures derived from exact Codex and Claude Code clients pinned in the workspace image. Fixtures must use synthetic values. Never commit a real prompt, response, command, path, repository name, email address, provider credential, account identifier, or session identifier. The agent and controller sanitizers are separate trust boundaries and both require regression coverage.
 
 ## Release contract
 

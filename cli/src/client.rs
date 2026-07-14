@@ -7,7 +7,9 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::models::{
-    CliTokenRequest, CliTokenResponse, CreateDevbox, DeleteResult, Devbox, DevboxList, WhoAmI,
+    CliTokenRequest, CliTokenResponse, CreateDevbox, DeleteResult, Devbox, DevboxList,
+    InsightsActivityData, InsightsEnvelope, InsightsPurgeResult, InsightsStatusData,
+    InsightsSummary, WhoAmI,
 };
 
 pub struct ApiClient {
@@ -100,6 +102,62 @@ impl ApiClient {
         .await
     }
 
+    pub async fn insights_summary(
+        &self,
+        query: &[(String, String)],
+    ) -> Result<InsightsEnvelope<InsightsSummary>> {
+        self.request_query(Method::GET, "/api/v1/insights/summary", query)
+            .await
+    }
+
+    pub async fn insights_status(
+        &self,
+        query: &[(String, String)],
+    ) -> Result<InsightsEnvelope<InsightsStatusData>> {
+        self.request_query(Method::GET, "/api/v1/insights/capabilities", query)
+            .await
+    }
+
+    pub async fn insights_activity(
+        &self,
+        query: &[(String, String)],
+    ) -> Result<InsightsEnvelope<InsightsActivityData>> {
+        self.request_query(Method::GET, "/api/v1/insights/activity", query)
+            .await
+    }
+
+    pub async fn insights_export(&self, query: &[(String, String)]) -> Result<String> {
+        let response = self
+            .http
+            .get(self.url("/api/v1/insights/export", query)?)
+            .bearer_auth(&self.token)
+            .header("Accept", "application/json, text/csv")
+            .send()
+            .await
+            .context("failed to reach Devboxes API")?;
+        let status = response.status();
+        if !status.is_success() {
+            let payload = response.json::<Value>().await.unwrap_or(Value::Null);
+            bail!(
+                "Devboxes API returned {status}: {}",
+                api_error_detail(&payload)
+            );
+        }
+        response
+            .text()
+            .await
+            .context("Devboxes API returned an invalid export")
+    }
+
+    pub async fn purge_insights(&self, name: &str) -> Result<InsightsPurgeResult> {
+        self.request_query(
+            Method::DELETE,
+            "/api/v1/insights",
+            &[("box".to_owned(), name.to_owned())],
+        )
+        .await
+    }
+
     async fn request<B, R>(&self, method: Method, path: &str, body: Option<&B>) -> Result<R>
     where
         B: Serialize + Sync + ?Sized,
@@ -107,7 +165,7 @@ impl ApiClient {
     {
         let mut request = self
             .http
-            .request(method, format!("{}{}", self.base_url, path))
+            .request(method, self.url(path, &[])?)
             .bearer_auth(&self.token)
             .header("Accept", "application/json");
         if let Some(body) = body {
@@ -118,6 +176,36 @@ impl ApiClient {
             .await
             .context("failed to reach Devboxes API")?;
         decode_response(response).await
+    }
+
+    async fn request_query<R>(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(String, String)],
+    ) -> Result<R>
+    where
+        R: DeserializeOwned,
+    {
+        let response = self
+            .http
+            .request(method, self.url(path, query)?)
+            .bearer_auth(&self.token)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("failed to reach Devboxes API")?;
+        decode_response(response).await
+    }
+
+    fn url(&self, path: &str, query: &[(String, String)]) -> Result<reqwest::Url> {
+        let mut url = reqwest::Url::parse(&format!("{}{}", self.base_url, path))
+            .context("failed to build Devboxes API URL")?;
+        if !query.is_empty() {
+            url.query_pairs_mut()
+                .extend_pairs(query.iter().map(|(key, value)| (key, value)));
+        }
+        Ok(url)
     }
 }
 

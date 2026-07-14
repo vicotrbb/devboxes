@@ -53,3 +53,7 @@ app.kubernetes.io/component: controller
 {{- define "devboxes.workspaceImage" -}}
 {{- printf "%s:%s" .Values.workspace.image.repository (default .Chart.AppVersion .Values.workspace.image.tag) }}
 {{- end }}
+
+{{- define "devboxes.insightsClaimName" -}}
+{{- default (printf "%s-insights" (include "devboxes.fullname" .)) .Values.insights.storage.existingClaim }}
+{{- end }}

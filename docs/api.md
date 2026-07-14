@@ -35,6 +35,12 @@ The shared token controls every devbox in the installation, including permanent 
 | `POST` | `/api/v1/devboxes/{name}/start` | 200 | Start compute and renew TTL |
 | `POST` | `/api/v1/devboxes/{name}/stop` | 200 | Stop compute and retain storage |
 | `DELETE` | `/api/v1/devboxes/{name}` | 200 | Delete compute, optionally purge storage |
+| `GET` | `/api/v1/insights/summary` | 200 | Read filtered AI and Git aggregates |
+| `GET` | `/api/v1/insights/timeseries` | 200 | Read a supported metric in hourly or daily buckets |
+| `GET` | `/api/v1/insights/activity` | 200 | Read cursor-paginated aggregate commit activity |
+| `GET` | `/api/v1/insights/capabilities` | 200 | Read collector freshness, queue state, loss, and metric availability |
+| `GET` | `/api/v1/insights/export` | 200 | Export a filtered JSON or CSV summary, or an online SQLite backup |
+| `DELETE` | `/api/v1/insights` | 200 | Explicitly purge history by box or instance ID |
 
 The list endpoint is not paginated. One installation is intended for a small, trusted operator scope.
 
@@ -116,6 +122,27 @@ curl --fail-with-body \
 ```
 
 The response identifies the name, whether storage was purged, and a human-readable message.
+
+## Insights responses
+
+Insights is disabled by default. Authenticated reads return an envelope with `enabled`, `generated_at`, `effective_range`, `filters`, `coverage`, `capabilities`, `storage`, and nullable `data`. Missing or unsupported provider measurements remain null with a capability reason. A zero means the collector reported or derived zero within the selected range.
+
+Read endpoints accept `since`, `until`, `box` or `devbox`, `instance_id`, `provider`, `model`, and `repo` or `repository` where applicable. Summary and capabilities accept `group_by=provider|model|box|repository`. Timeseries requires a supported `metric` and accepts `bucket=hour|day`. Activity accepts an opaque `cursor` and a `limit` from 1 to 200.
+
+Export accepts `format=json|csv|sqlite`. JSON and CSV honor the filters. SQLite returns a consistent online backup of the complete database and intentionally ignores summary filters. Never copy only the live database file while write-ahead logging is active.
+
+Purge requires exactly one selector:
+
+```bash
+curl --fail-with-body \
+  --request DELETE \
+  --header "Authorization: Bearer $DEVBOX_TOKEN" \
+  'https://devboxes.example.com/api/v1/insights?box=atlas'
+```
+
+The hidden workspace ingest endpoint is not a public operator API. It accepts only the per-instance scoped credential, OTLP HTTP JSON metrics inside the bounded Devboxes batch envelope, and optional gzip compression. Browser and CLI bearer tokens are rejected there.
+
+See [Insights](insights.md) for exact metric semantics, privacy constraints, retention, identity, rollout, and backup procedures.
 
 ## Errors
 

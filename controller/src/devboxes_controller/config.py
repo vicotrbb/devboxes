@@ -38,6 +38,26 @@ class Settings(BaseSettings):
     authorization_code_store_size: int = Field(default=1024, ge=16, le=10_000)
     cli_token_ttl_seconds: int = Field(default=2_592_000, ge=300, le=31_536_000)
     cli_signing_key: SecretStr | None = None
+    insights_enabled: bool = False
+    insights_db_path: str = "/var/lib/devboxes/insights.db"
+    insights_database_warning_bytes: int = Field(
+        default=1_717_986_918,
+        ge=1_048_576,
+        le=1_099_511_627_776,
+    )
+    insights_controller_url: str = "http://devboxes:8000"
+    insights_signing_key: SecretStr | None = None
+    insights_retention_raw_days: int = Field(default=30, ge=1, le=365)
+    insights_retention_hourly_days: int = Field(default=90, ge=1, le=730)
+    insights_retention_daily_days: int = Field(default=365, ge=1, le=3650)
+    insights_agent_scan_interval_seconds: int = Field(default=60, ge=15, le=3600)
+    insights_agent_repository_depth: int = Field(default=4, ge=1, le=12)
+    insights_agent_max_queue_bytes: int = Field(default=134_217_728, ge=1_048_576, le=2_147_483_648)
+    insights_agent_max_queue_age_seconds: int = Field(default=604_800, ge=60, le=31_536_000)
+    insights_max_compressed_bytes: int = Field(default=2_097_152, ge=1024, le=16_777_216)
+    insights_max_expanded_bytes: int = Field(default=8_388_608, ge=4096, le=67_108_864)
+    insights_max_points_per_batch: int = Field(default=10_000, ge=1, le=100_000)
+    insights_ingest_rate_per_minute: int = Field(default=120, ge=1, le=10_000)
     cookie_secure: bool = True
     kubeconfig_context: str | None = None
     log_level: str = "INFO"
@@ -58,6 +78,7 @@ class Settings(BaseSettings):
         "workspace_load_balancer_class",
         "kubeconfig_context",
         "cli_signing_key",
+        "insights_signing_key",
         mode="before",
     )
     @classmethod
@@ -100,6 +121,32 @@ class Settings(BaseSettings):
             raise ValueError("CLI signing key must contain at least 32 characters")
         return value
 
+    @field_validator("insights_signing_key")
+    @classmethod
+    def insights_signing_key_is_strong(cls, value: SecretStr | None) -> SecretStr | None:
+        """Require a dedicated ingest key to carry strong entropy when set."""
+        if value is not None and len(value.get_secret_value().strip()) < 32:
+            raise ValueError("Insights signing key must contain at least 32 characters")
+        return value
+
+    @field_validator("insights_db_path")
+    @classmethod
+    def insights_db_path_is_absolute(cls, value: str) -> str:
+        """Keep the central database on an explicit mounted filesystem path."""
+        if not value.startswith("/"):
+            raise ValueError("insights_db_path must be absolute")
+        return value
+
+    @field_validator("insights_controller_url")
+    @classmethod
+    def insights_controller_url_is_http(cls, value: str) -> str:
+        """Require an absolute internal HTTP URL used only by workspace agents."""
+        value = value.strip().rstrip("/")
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("insights_controller_url must be an absolute http or https URL")
+        return value
+
     @field_validator("access_token")
     @classmethod
     def access_token_is_not_blank(cls, value: SecretStr) -> SecretStr:
@@ -116,6 +163,14 @@ class Settings(BaseSettings):
             raise ValueError("default_ttl_hours cannot exceed max_ttl_hours")
         if self.workspace_service_type == "NodePort" and not self.workspace_service_host:
             raise ValueError("workspace_service_host is required for NodePort services")
+        if not (
+            self.insights_retention_raw_days
+            <= self.insights_retention_hourly_days
+            <= self.insights_retention_daily_days
+        ):
+            raise ValueError("Insights retention must satisfy rawDays <= hourlyDays <= dailyDays")
+        if self.insights_max_compressed_bytes > self.insights_max_expanded_bytes:
+            raise ValueError("Insights compressed limit cannot exceed expanded limit")
         return self
 
 
