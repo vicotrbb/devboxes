@@ -8,6 +8,7 @@ ssh_port="${DEVBOXES_E2E_SSH_PORT:-12222}"
 node_image="${DEVBOXES_E2E_NODE_IMAGE:-kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f}"
 published_version="${DEVBOXES_E2E_PUBLISHED_VERSION:-}"
 released_cli="${DEVBOXES_E2E_CLI:-}"
+interactive_ssh="${DEVBOXES_E2E_INTERACTIVE_SSH:-1}"
 workspace_timeout="${DEVBOXES_E2E_WORKSPACE_TIMEOUT:-3m}"
 token="e2e-access-token-at-least-32-characters"
 temporary_directory="$(mktemp -d)"
@@ -32,6 +33,10 @@ if [[ -n "$released_cli" && ! -x "$released_cli" ]]; then
   printf 'error: DEVBOXES_E2E_CLI is not executable: %s\n' "$released_cli" >&2
   exit 1
 fi
+if [[ "$interactive_ssh" != 0 && "$interactive_ssh" != 1 ]]; then
+  printf 'error: DEVBOXES_E2E_INTERACTIVE_SSH must be 0 or 1\n' >&2
+  exit 1
+fi
 previous_context="$(kubectl config current-context 2>/dev/null || true)"
 
 cleanup() {
@@ -48,7 +53,10 @@ cleanup() {
     if [[ -f "$temporary_directory/ssh-port-forward.log" ]]; then
       cat "$temporary_directory/ssh-port-forward.log" >&2
     fi
-    for log_file in "$temporary_directory"/interactive-*.log "$temporary_directory"/tmux-reconnect.log; do
+    for log_file in \
+      "$temporary_directory"/remote-*.log \
+      "$temporary_directory"/interactive-*.log \
+      "$temporary_directory"/tmux-reconnect.log; do
       if [[ -f "$log_file" ]]; then
         printf '\n%s:\n' "$(basename "$log_file")" >&2
         cat "$log_file" >&2
@@ -309,45 +317,67 @@ ssh \
   'test -d "$HOME/workspace" && sudo -n true && printf "persistent\n" >"$HOME/workspace/e2e-persistence" && printf "end-to-end-ssh-ok\n"'
 
 for terminal in xterm-ghostty completely-unknown-future-terminal; do
-  terminal_log="$temporary_directory/interactive-$terminal.log"
-  if [[ "$terminal" != xterm-ghostty ]]; then
-    ssh \
-      -i "$temporary_directory/id_ed25519" \
-      -p "$ssh_port" \
-      -o StrictHostKeyChecking=no \
-      -o UserKnownHostsFile=/dev/null \
-      dev@127.0.0.1 \
-      'tmux kill-server 2>/dev/null || true'
-  fi
-  # The variables expand in the remote shell inside tmux, not in this process.
-  # shellcheck disable=SC2016
-  { printf 'printf "interactive-term=%%s original=%%s\\n" "$TERM" "$DEVBOX_ORIGINAL_TERM"\ntmux detach-client\n'; sleep 1; } \
-    | TERM="$terminal" ssh -tt \
-      -i "$temporary_directory/id_ed25519" \
-      -p "$ssh_port" \
-      -o StrictHostKeyChecking=no \
-      -o UserKnownHostsFile=/dev/null \
-      dev@127.0.0.1 >"$terminal_log" 2>&1
-  grep -Fq "original=$terminal" "$terminal_log"
-  if grep -Fq 'missing or unsuitable terminal' "$terminal_log"; then
-    printf 'error: %s reproduced the historical tmux terminal failure\n' "$terminal" >&2
-    exit 1
-  fi
-done
-grep -Fq 'interactive-term=tmux-256color original=xterm-ghostty' \
-  "$temporary_directory/interactive-xterm-ghostty.log"
-grep -Fq 'devbox: terminal completely-unknown-future-terminal is unavailable; using xterm-256color' \
-  "$temporary_directory/interactive-completely-unknown-future-terminal.log"
-grep -Fq 'interactive-term=tmux-256color original=completely-unknown-future-terminal' \
-  "$temporary_directory/interactive-completely-unknown-future-terminal.log"
-printf 'printf "tmux-reconnect=ok\n"\ntmux detach-client\n' \
-  | TERM=completely-unknown-future-terminal ssh -tt \
+  terminal_log="$temporary_directory/remote-$terminal.log"
+  TERM="$terminal" ssh \
     -i "$temporary_directory/id_ed25519" \
     -p "$ssh_port" \
+    -o SendEnv=TERM \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
-    dev@127.0.0.1 >"$temporary_directory/tmux-reconnect.log" 2>&1
-grep -Fq 'tmux-reconnect=ok' "$temporary_directory/tmux-reconnect.log"
+    dev@127.0.0.1 \
+    'printf "remote-term=%s original=%s\n" "$TERM" "$DEVBOX_ORIGINAL_TERM"' \
+    >"$terminal_log" 2>&1
+  grep -Fq "original=$terminal" "$terminal_log"
+done
+grep -Fq 'remote-term=xterm-ghostty original=xterm-ghostty' \
+  "$temporary_directory/remote-xterm-ghostty.log"
+grep -Fq 'devbox: terminal completely-unknown-future-terminal is unavailable; using xterm-256color' \
+  "$temporary_directory/remote-completely-unknown-future-terminal.log"
+grep -Fq 'remote-term=xterm-256color original=completely-unknown-future-terminal' \
+  "$temporary_directory/remote-completely-unknown-future-terminal.log"
+
+if [[ "$interactive_ssh" == 1 ]]; then
+  for terminal in xterm-ghostty completely-unknown-future-terminal; do
+    terminal_log="$temporary_directory/interactive-$terminal.log"
+    if [[ "$terminal" != xterm-ghostty ]]; then
+      ssh \
+        -i "$temporary_directory/id_ed25519" \
+        -p "$ssh_port" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        dev@127.0.0.1 \
+        'tmux kill-server 2>/dev/null || true'
+    fi
+    # The variables expand in the remote shell inside tmux, not in this process.
+    # shellcheck disable=SC2016
+    { printf 'printf "interactive-term=%%s original=%%s\\n" "$TERM" "$DEVBOX_ORIGINAL_TERM"\ntmux detach-client\n'; sleep 1; } \
+      | TERM="$terminal" ssh -tt \
+        -i "$temporary_directory/id_ed25519" \
+        -p "$ssh_port" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        dev@127.0.0.1 >"$terminal_log" 2>&1
+    grep -Fq "original=$terminal" "$terminal_log"
+    if grep -Fq 'missing or unsuitable terminal' "$terminal_log"; then
+      printf 'error: %s reproduced the historical tmux terminal failure\n' "$terminal" >&2
+      exit 1
+    fi
+  done
+  grep -Fq 'interactive-term=tmux-256color original=xterm-ghostty' \
+    "$temporary_directory/interactive-xterm-ghostty.log"
+  grep -Fq 'devbox: terminal completely-unknown-future-terminal is unavailable; using xterm-256color' \
+    "$temporary_directory/interactive-completely-unknown-future-terminal.log"
+  grep -Fq 'interactive-term=tmux-256color original=completely-unknown-future-terminal' \
+    "$temporary_directory/interactive-completely-unknown-future-terminal.log"
+  printf 'printf "tmux-reconnect=ok\n"\ntmux detach-client\n' \
+    | TERM=completely-unknown-future-terminal ssh -tt \
+      -i "$temporary_directory/id_ed25519" \
+      -p "$ssh_port" \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      dev@127.0.0.1 >"$temporary_directory/tmux-reconnect.log" 2>&1
+  grep -Fq 'tmux-reconnect=ok' "$temporary_directory/tmux-reconnect.log"
+fi
 kill "$ssh_port_forward" >/dev/null 2>&1 || true
 ssh_port_forward=""
 
