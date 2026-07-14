@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import uvicorn
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, status
@@ -14,13 +15,33 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
+from pydantic import ValidationError
 from starlette.middleware.base import RequestResponseEndpoint
 
 from . import __version__
-from .auth import CSRF_COOKIE, SESSION_COOKIE, AuthContext, Authenticator
+from .auth import (
+    CLI_CLIENT_ID,
+    CLI_SCOPE,
+    CSRF_COOKIE,
+    SESSION_COOKIE,
+    AuthContext,
+    Authenticator,
+    AuthorizationCodeStore,
+    is_loopback_redirect_uri,
+    is_safe_login_next,
+    validate_authorization_request,
+)
 from .config import Settings, get_settings
 from .manager import DevboxConflictError, DevboxManager, DevboxNotFoundError
-from .models import CreateDevboxRequest, DeleteResult, Devbox, DevboxList, WhoAmI
+from .models import (
+    CliTokenRequest,
+    CliTokenResponse,
+    CreateDevboxRequest,
+    DeleteResult,
+    Devbox,
+    DevboxList,
+    WhoAmI,
+)
 from .resources import PRESETS
 
 logger = logging.getLogger(__name__)
@@ -44,6 +65,10 @@ def create_app(
     settings = settings or get_settings()
     manager = manager or DevboxManager(settings)
     authenticator = Authenticator(settings)
+    authorization_codes = AuthorizationCodeStore(
+        ttl_seconds=settings.authorization_code_ttl_seconds,
+        maximum_codes=settings.authorization_code_store_size,
+    )
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
 
     @asynccontextmanager
@@ -89,7 +114,7 @@ def create_app(
             "/docs",
             "/login",
             "/auth/login",
-        } or request.url.path.startswith("/api/"):
+        } or request.url.path.startswith(("/api/", "/auth/cli/")):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
 
@@ -120,17 +145,32 @@ def create_app(
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     @app.get("/login", response_class=HTMLResponse, include_in_schema=False)
-    async def login_page(request: Request) -> Response:
+    async def login_page(
+        request: Request,
+        next_target: Annotated[str, Query(alias="next", max_length=2048)] = "/",
+    ) -> Response:
+        if not is_safe_login_next(next_target):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid return path"
+            )
         if authenticator.browser_session_valid(request):
-            return RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
+            return RedirectResponse(next_target, status_code=status.HTTP_303_SEE_OTHER)
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"error": None, "cluster_name": settings.cluster_name},
+            {"error": None, "cluster_name": settings.cluster_name, "next_target": next_target},
         )
 
     @app.post("/auth/login", response_class=HTMLResponse, include_in_schema=False)
-    async def login(request: Request, token: Annotated[str, Form()]) -> Response:
+    async def login(
+        request: Request,
+        token: Annotated[str, Form()],
+        next_target: Annotated[str, Form(alias="next", max_length=2048)] = "/",
+    ) -> Response:
+        if not is_safe_login_next(next_target):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid return path"
+            )
         if not authenticator.validate_access_token(token):
             return templates.TemplateResponse(
                 request,
@@ -138,11 +178,12 @@ def create_app(
                 {
                     "error": "That access token was not accepted.",
                     "cluster_name": settings.cluster_name,
+                    "next_target": next_target,
                 },
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
         session, csrf = authenticator.issue_session()
-        response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
+        response = RedirectResponse(next_target, status_code=status.HTTP_303_SEE_OTHER)
         response.set_cookie(
             SESSION_COOKIE,
             session,
@@ -162,6 +203,124 @@ def create_app(
             path="/",
         )
         return response
+
+    @app.get("/auth/cli/authorize", response_class=HTMLResponse, include_in_schema=False)
+    async def cli_authorize_page(
+        request: Request,
+        response_type: str,
+        client_id: str,
+        redirect_uri: str,
+        state: str,
+        code_challenge: str,
+        code_challenge_method: str,
+    ) -> Response:
+        authorization = validate_authorization_request(
+            response_type=response_type,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+        )
+        csrf = authenticator.browser_csrf(request)
+        if csrf is None:
+            next_target = request.url.path
+            if request.url.query:
+                next_target += f"?{request.url.query}"
+            return RedirectResponse(
+                f"/login?{urlencode({'next': next_target})}",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return templates.TemplateResponse(
+            request,
+            "cli_authorize.html",
+            {
+                "authorization": authorization,
+                "csrf": csrf,
+                "cluster_name": settings.cluster_name,
+                "display_name": settings.display_name,
+            },
+        )
+
+    @app.post("/auth/cli/authorize", include_in_schema=False)
+    async def cli_authorize_decision(
+        request: Request,
+        action: Annotated[str, Form(max_length=16)],
+        csrf: Annotated[str, Form(min_length=16, max_length=256)],
+        response_type: Annotated[str, Form(max_length=16)],
+        client_id: Annotated[str, Form(max_length=64)],
+        redirect_uri: Annotated[str, Form(max_length=256)],
+        state: Annotated[str, Form(max_length=256)],
+        code_challenge: Annotated[str, Form(max_length=128)],
+        code_challenge_method: Annotated[str, Form(max_length=16)],
+    ) -> Response:
+        authorization = validate_authorization_request(
+            response_type=response_type,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+        )
+        auth = authenticator.require_form_csrf(request, csrf)
+        if action == "deny":
+            location = _append_redirect_query(
+                authorization.redirect_uri,
+                {"error": "access_denied", "state": authorization.state},
+            )
+        elif action == "approve":
+            code = await authorization_codes.issue(
+                client_id=authorization.client_id,
+                redirect_uri=authorization.redirect_uri,
+                code_challenge=authorization.code_challenge,
+                subject=auth.subject,
+            )
+            location = _append_redirect_query(
+                authorization.redirect_uri,
+                {"code": code, "state": authorization.state},
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid authorization decision",
+            )
+        return RedirectResponse(location, status_code=status.HTTP_303_SEE_OTHER)
+
+    @app.post("/api/v1/auth/cli/token", tags=["auth"])
+    async def cli_token_exchange(request: Request) -> CliTokenResponse:
+        try:
+            payload = CliTokenRequest.model_validate(await request.json())
+        except (TypeError, ValueError, ValidationError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid authorization code exchange",
+            ) from None
+        if (
+            payload.grant_type != "authorization_code"
+            or payload.client_id != CLI_CLIENT_ID
+            or not is_loopback_redirect_uri(payload.redirect_uri)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid authorization code exchange",
+            )
+        subject = await authorization_codes.consume(
+            code=payload.code,
+            client_id=payload.client_id,
+            redirect_uri=payload.redirect_uri,
+            code_verifier=payload.code_verifier,
+        )
+        if subject is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid authorization code exchange",
+            )
+        token, expires_in = authenticator.issue_cli_token(subject)
+        return CliTokenResponse(
+            access_token=token,
+            expires_in=expires_in,
+            scope=CLI_SCOPE,
+        )
 
     @app.post("/auth/logout", include_in_schema=False)
     async def logout(_: Auth) -> Response:
@@ -216,7 +375,7 @@ def create_app(
 
     @app.get("/api/v1/whoami", tags=["auth"])
     async def whoami(auth: Auth) -> WhoAmI:
-        return WhoAmI(user=settings.display_name, mode=auth.mode)
+        return WhoAmI(user=auth.subject, mode=auth.mode)
 
     @app.get("/api/v1/devboxes", tags=["devboxes"])
     async def list_devboxes(_: Auth) -> DevboxList:
@@ -268,6 +427,11 @@ async def _not_found[T](awaitable: Awaitable[T], name: str) -> T:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Devbox {name!r} was not found",
         ) from error
+
+
+def _append_redirect_query(redirect_uri: str, values: dict[str, str]) -> str:
+    parsed = urlsplit(redirect_uri)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(values), ""))
 
 
 async def _cleanup_loop(manager: DevboxManager, interval: int) -> None:

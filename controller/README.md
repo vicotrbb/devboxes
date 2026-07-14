@@ -2,6 +2,9 @@
 
 FastAPI controller, authenticated REST API, and server-rendered dashboard for Devboxes.
 
+Authentication supports the master bearer token, signed browser sessions with CSRF, and a
+native CLI Authorization Code plus PKCE flow that issues scoped expiring bearer tokens.
+
 ```bash
 uv sync --extra dev
 uv run uvicorn devboxes_controller.app:create_app --factory --reload

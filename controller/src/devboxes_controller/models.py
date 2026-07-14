@@ -94,6 +94,27 @@ class WhoAmI(BaseModel):
     mode: str
 
 
+class CliTokenRequest(BaseModel):
+    """Validate a native CLI authorization-code exchange."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    grant_type: str = Field(default="authorization_code", max_length=32)
+    code: str = Field(min_length=32, max_length=256)
+    code_verifier: str = Field(min_length=43, max_length=128)
+    client_id: str = Field(min_length=1, max_length=64)
+    redirect_uri: str = Field(min_length=1, max_length=256)
+
+
+class CliTokenResponse(BaseModel):
+    """Return a scoped CLI token without refresh-token material."""
+
+    access_token: str
+    token_type: str = "Bearer"  # noqa: S105 - OAuth token type, not a credential
+    expires_in: int
+    scope: str
+
+
 class DeleteResult(BaseModel):
     """Report the data-retention result of a delete operation."""
 

@@ -61,3 +61,20 @@ pub struct WhoAmI {
     pub user: String,
     pub mode: String,
 }
+
+#[derive(Debug, Serialize)]
+pub struct CliTokenRequest<'a> {
+    pub grant_type: &'static str,
+    pub code: &'a str,
+    pub code_verifier: &'a str,
+    pub client_id: &'static str,
+    pub redirect_uri: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CliTokenResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: u64,
+    pub scope: String,
+}

@@ -8,6 +8,7 @@ ssh_port="${DEVBOXES_E2E_SSH_PORT:-12222}"
 node_image="${DEVBOXES_E2E_NODE_IMAGE:-kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f}"
 published_version="${DEVBOXES_E2E_PUBLISHED_VERSION:-}"
 released_cli="${DEVBOXES_E2E_CLI:-}"
+interactive_ssh="${DEVBOXES_E2E_INTERACTIVE_SSH:-1}"
 workspace_timeout="${DEVBOXES_E2E_WORKSPACE_TIMEOUT:-3m}"
 token="e2e-access-token-at-least-32-characters"
 temporary_directory="$(mktemp -d)"
@@ -15,7 +16,7 @@ controller_port_forward=""
 ssh_port_forward=""
 previous_context=""
 
-for command in kind kubectl helm docker curl jq ssh ssh-keygen nc; do
+for command in kind kubectl helm docker curl jq ssh ssh-keygen nc python3; do
   if ! command -v "$command" >/dev/null 2>&1; then
     printf 'error: %s is required\n' "$command" >&2
     exit 1
@@ -30,6 +31,10 @@ if [[ -n "$published_version" && -z "${DEVBOXES_E2E_WORKSPACE_TIMEOUT:-}" ]]; th
 fi
 if [[ -n "$released_cli" && ! -x "$released_cli" ]]; then
   printf 'error: DEVBOXES_E2E_CLI is not executable: %s\n' "$released_cli" >&2
+  exit 1
+fi
+if [[ "$interactive_ssh" != 0 && "$interactive_ssh" != 1 ]]; then
+  printf 'error: DEVBOXES_E2E_INTERACTIVE_SSH must be 0 or 1\n' >&2
   exit 1
 fi
 previous_context="$(kubectl config current-context 2>/dev/null || true)"
@@ -48,6 +53,15 @@ cleanup() {
     if [[ -f "$temporary_directory/ssh-port-forward.log" ]]; then
       cat "$temporary_directory/ssh-port-forward.log" >&2
     fi
+    for log_file in \
+      "$temporary_directory"/remote-*.log \
+      "$temporary_directory"/interactive-*.log \
+      "$temporary_directory"/tmux-reconnect.log; do
+      if [[ -f "$log_file" ]]; then
+        printf '\n%s:\n' "$(basename "$log_file")" >&2
+        cat "$log_file" >&2
+      fi
+    done
   fi
   if [[ -n "$ssh_port_forward" ]]; then
     kill "$ssh_port_forward" >/dev/null 2>&1 || true
@@ -93,6 +107,20 @@ cli() {
   DEVBOX_TOKEN="$token" \
   DEVBOX_CONFIG="$temporary_directory/devbox-config.toml" \
     "$released_cli" "$@"
+}
+
+browser_cli() {
+  DEVBOX_URL="http://127.0.0.1:$controller_port" \
+  DEVBOX_CONFIG="$temporary_directory/browser-login-config.toml" \
+    "$released_cli" "$@"
+}
+
+file_mode() {
+  if stat -c '%a' "$1" >/dev/null 2>&1; then
+    stat -c '%a' "$1"
+  else
+    stat -f '%Lp' "$1"
+  fi
 }
 
 kind delete cluster --name "$cluster" >/dev/null 2>&1 || true
@@ -184,6 +212,68 @@ wait_for_http \
 api "http://127.0.0.1:$controller_port/api/v1/whoami" >/dev/null
 if [[ -n "$released_cli" ]]; then
   cli --json list | jq -e 'type == "array"' >/dev/null
+
+  browser_cli login --no-open --timeout 60 \
+    >"$temporary_directory/browser-login.out" \
+    2>"$temporary_directory/browser-login.err" &
+  browser_login_pid=$!
+  authorization_url=""
+  for _ in {1..40}; do
+    authorization_url="$(sed -n '/^http:\/\/127\.0\.0\.1:/p' "$temporary_directory/browser-login.out" | tail -n 1)"
+    [[ -n "$authorization_url" ]] && break
+    kill -0 "$browser_login_pid" 2>/dev/null || break
+    sleep 0.25
+  done
+  test -n "$authorization_url"
+
+  login_location="$(
+    curl -sS -D - -o /dev/null "$authorization_url" \
+      | awk 'tolower($1) == "location:" {sub(/\r$/, "", $2); print $2; exit}'
+  )"
+  next_target="$(
+    python3 - "$login_location" <<'PY'
+import sys
+from urllib.parse import parse_qs, urlsplit
+
+print(parse_qs(urlsplit(sys.argv[1]).query)["next"][0])
+PY
+  )"
+  cookie_jar="$temporary_directory/browser-cookies.txt"
+  curl -sS -c "$cookie_jar" -b "$cookie_jar" -o /dev/null \
+    --request POST \
+    --data-urlencode "token=$token" \
+    --data-urlencode "next=$next_target" \
+    "http://127.0.0.1:$controller_port/auth/login"
+  csrf="$(awk '$6 == "devboxes_csrf" {print $7}' "$cookie_jar")"
+  test -n "$csrf"
+  authorization_parameters="$(
+    python3 - "$authorization_url" <<'PY'
+import json
+import sys
+from urllib.parse import parse_qs, urlsplit
+
+print(json.dumps({key: values[0] for key, values in parse_qs(urlsplit(sys.argv[1]).query).items()}))
+PY
+  )"
+  curl -sS -L -c "$cookie_jar" -b "$cookie_jar" -o /dev/null \
+    --data-urlencode "action=approve" \
+    --data-urlencode "csrf=$csrf" \
+    --data-urlencode "response_type=$(jq -r .response_type <<<"$authorization_parameters")" \
+    --data-urlencode "client_id=$(jq -r .client_id <<<"$authorization_parameters")" \
+    --data-urlencode "redirect_uri=$(jq -r .redirect_uri <<<"$authorization_parameters")" \
+    --data-urlencode "state=$(jq -r .state <<<"$authorization_parameters")" \
+    --data-urlencode "code_challenge=$(jq -r .code_challenge <<<"$authorization_parameters")" \
+    --data-urlencode "code_challenge_method=$(jq -r .code_challenge_method <<<"$authorization_parameters")" \
+    "http://127.0.0.1:$controller_port/auth/cli/authorize"
+  wait "$browser_login_pid"
+  grep -Fq 'authenticated as operator via cli-bearer' "$temporary_directory/browser-login.out"
+  if grep -Fq "$token" "$temporary_directory/browser-login.out" \
+    || grep -Fq "$token" "$temporary_directory/browser-login.err"; then
+    printf 'error: browser login output exposed the master token\n' >&2
+    exit 1
+  fi
+  test "$(file_mode "$temporary_directory/browser-login-config.toml")" = 600
+  browser_cli --json list | jq -e 'type == "array"' >/dev/null
 fi
 
 if [[ -n "$released_cli" ]]; then
@@ -224,7 +314,70 @@ ssh \
   -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null \
   dev@127.0.0.1 \
-  'test -d "$HOME/workspace" && sudo -n true && printf "end-to-end-ssh-ok\n"'
+  'test -d "$HOME/workspace" && sudo -n true && printf "persistent\n" >"$HOME/workspace/e2e-persistence" && printf "end-to-end-ssh-ok\n"'
+
+for terminal in xterm-ghostty completely-unknown-future-terminal; do
+  terminal_log="$temporary_directory/remote-$terminal.log"
+  TERM="$terminal" ssh \
+    -i "$temporary_directory/id_ed25519" \
+    -p "$ssh_port" \
+    -o SendEnv=TERM \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    dev@127.0.0.1 \
+    'printf "remote-term=%s original=%s\n" "$TERM" "$DEVBOX_ORIGINAL_TERM"' \
+    >"$terminal_log" 2>&1
+  grep -Fq "original=$terminal" "$terminal_log"
+done
+grep -Fq 'remote-term=xterm-ghostty original=xterm-ghostty' \
+  "$temporary_directory/remote-xterm-ghostty.log"
+grep -Fq 'devbox: terminal completely-unknown-future-terminal is unavailable; using xterm-256color' \
+  "$temporary_directory/remote-completely-unknown-future-terminal.log"
+grep -Fq 'remote-term=xterm-256color original=completely-unknown-future-terminal' \
+  "$temporary_directory/remote-completely-unknown-future-terminal.log"
+
+if [[ "$interactive_ssh" == 1 ]]; then
+  for terminal in xterm-ghostty completely-unknown-future-terminal; do
+    terminal_log="$temporary_directory/interactive-$terminal.log"
+    if [[ "$terminal" != xterm-ghostty ]]; then
+      ssh \
+        -i "$temporary_directory/id_ed25519" \
+        -p "$ssh_port" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        dev@127.0.0.1 \
+        'tmux kill-server 2>/dev/null || true'
+    fi
+    # The variables expand in the remote shell inside tmux, not in this process.
+    # shellcheck disable=SC2016
+    { printf 'printf "interactive-term=%%s original=%%s\\n" "$TERM" "$DEVBOX_ORIGINAL_TERM"\ntmux detach-client\n'; sleep 1; } \
+      | TERM="$terminal" ssh -tt \
+        -i "$temporary_directory/id_ed25519" \
+        -p "$ssh_port" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        dev@127.0.0.1 >"$terminal_log" 2>&1
+    grep -Fq "original=$terminal" "$terminal_log"
+    if grep -Fq 'missing or unsuitable terminal' "$terminal_log"; then
+      printf 'error: %s reproduced the historical tmux terminal failure\n' "$terminal" >&2
+      exit 1
+    fi
+  done
+  grep -Fq 'interactive-term=tmux-256color original=xterm-ghostty' \
+    "$temporary_directory/interactive-xterm-ghostty.log"
+  grep -Fq 'devbox: terminal completely-unknown-future-terminal is unavailable; using xterm-256color' \
+    "$temporary_directory/interactive-completely-unknown-future-terminal.log"
+  grep -Fq 'interactive-term=tmux-256color original=completely-unknown-future-terminal' \
+    "$temporary_directory/interactive-completely-unknown-future-terminal.log"
+  printf 'printf "tmux-reconnect=ok\n"\ntmux detach-client\n' \
+    | TERM=completely-unknown-future-terminal ssh -tt \
+      -i "$temporary_directory/id_ed25519" \
+      -p "$ssh_port" \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      dev@127.0.0.1 >"$temporary_directory/tmux-reconnect.log" 2>&1
+  grep -Fq 'tmux-reconnect=ok' "$temporary_directory/tmux-reconnect.log"
+fi
 kill "$ssh_port_forward" >/dev/null 2>&1 || true
 ssh_port_forward=""
 
@@ -260,6 +413,8 @@ fi
 kubectl -n "$namespace" rollout status deployment/devbox-smoke --timeout="$workspace_timeout"
 second_host_key="$(kubectl -n "$namespace" exec deployment/devbox-smoke -- cat /home/dev/.devbox/ssh/ssh_host_ed25519_key.pub)"
 test "$first_host_key" = "$second_host_key"
+kubectl -n "$namespace" exec deployment/devbox-smoke -- \
+  grep -Fx persistent /home/dev/workspace/e2e-persistence >/dev/null
 
 if [[ -n "$released_cli" ]]; then
   cli delete smoke --purge --yes >/dev/null

@@ -4,7 +4,23 @@ Devboxes is a namespaced Kubernetes application with three independently consuma
 
 ## Request path
 
-The CLI authenticates with a bearer token. The browser exchanges the same access token for a signed, HTTP-only SameSite session plus a separate CSRF token. The controller never sends the raw access token back to either client.
+Automation may authenticate with the master bearer token. Interactive `devbox login` uses
+the native-app Authorization Code flow with PKCE S256: the CLI binds a numeric loopback
+callback, opens the external browser, validates state, receives a short-lived one-time code,
+and exchanges it for a scoped CLI bearer token. The browser exchanges the master token for
+a signed, HTTP-only SameSite session plus a separate CSRF token. The controller never sends
+the master access token back to either client.
+
+Authorization codes live only in a bounded in-memory store. The controller retains a
+SHA-256 digest, client ID, exact loopback redirect URI, PKCE challenge, subject, and expiry.
+Codes expire after about two minutes, are consumed atomically once, and are pruned during
+store operations. Approval and denial require the browser session's form CSRF token.
+
+CLI tokens are HMAC-signed JWTs with fixed issuer, audience, type, scope, subject, issued
+time, expiry, and token ID claims. The default signing key is derived from the master token
+with explicit domain separation; an optional dedicated signing key can be supplied from the
+existing controller Secret. Rotating the effective signing key revokes all issued CLI tokens.
+There are no refresh tokens.
 
 The controller translates lifecycle operations into native Kubernetes resources in its own namespace:
 
@@ -37,8 +53,13 @@ The workspace entrypoint refuses to start without `SSH_AUTHORIZED_KEYS`. It prep
 - The workspace runs as root during initialization, then exposes only the unprivileged `dev` SSH user. Password login and root login are disabled.
 - The trusted `dev` user has passwordless `sudo`. The pod adds only `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`, `SETUID`, and `SYS_CHROOT`; `SYS_ADMIN` and privileged mode are not used.
 - SSH host checking uses a stable alias scoped to both the Devboxes installation and box name, preventing collisions across installations.
+- CLI callbacks accept only exact HTTP loopback URIs with numeric loopback hosts, explicit non-privileged ports, and `/callback`; login return targets accept only the internal authorization route.
 
-The shared controller token is an operator credential. Anyone holding it can create, stop, delete, or purge every devbox in that installation. Devboxes does not currently provide tenant isolation or per-user authorization.
+The master controller token is an operator credential. Anyone holding it can create, stop,
+delete, or purge every devbox in that installation. A scoped CLI token currently carries the
+same lifecycle authority for that single operator, but it expires and cannot mint browser
+sessions or new CLI tokens. Devboxes does not currently provide tenant isolation or per-user
+authorization.
 
 ## Scheduling and storage
 
@@ -54,4 +75,8 @@ A retained PVC is expanded when a larger preset is requested, subject to the Sto
 
 ## Availability
 
-The controller is stateless apart from signed sessions derived from its access token. The chart defaults to one replica because create operations are optimized for a single trusted operator. The Kubernetes API remains the source of truth, so a controller restart does not lose devbox state.
+The controller is stateless apart from signed sessions and the short-lived in-memory
+authorization-code store. Restarting it cancels pending CLI approvals but does not affect
+issued tokens or devbox state. The chart defaults to one replica because create operations
+and one-time code consumption are optimized for a single trusted operator. The Kubernetes
+API remains the source of truth.

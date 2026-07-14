@@ -1,13 +1,59 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-export HOME=/home/dev
+export HOME="${HOME:-/home/dev}"
 export USER=dev
 export LOGNAME=dev
 export SHELL=/bin/zsh
 
-# shellcheck source=/dev/null
-source /etc/profile.d/devbox-secrets.sh
+DEVBOX_ORIGINAL_TERM="${TERM-}"
+export DEVBOX_ORIGINAL_TERM
+
+term_is_safe() {
+  local candidate="$1"
+  [[ ${#candidate} -ge 1 && ${#candidate} -le 64 ]] \
+    && [[ "$candidate" =~ ^[[:alnum:]][[:alnum:]_.+:-]*$ ]]
+}
+
+term_is_installed() {
+  infocmp -x "$1" >/dev/null 2>&1
+}
+
+select_fallback_term() {
+  local candidate
+  for candidate in xterm-256color screen-256color xterm vt100; do
+    if term_is_installed "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! term_is_safe "$DEVBOX_ORIGINAL_TERM" \
+  || ! term_is_installed "$DEVBOX_ORIGINAL_TERM"; then
+  if ! fallback_term="$(select_fallback_term)"; then
+    printf '%s\n' \
+      'devbox: no usable terminal entry is installed; contact the Devboxes operator' >&2
+    exit 1
+  fi
+  if term_is_safe "$DEVBOX_ORIGINAL_TERM"; then
+    original_description="$DEVBOX_ORIGINAL_TERM"
+  elif [[ -z "$DEVBOX_ORIGINAL_TERM" ]]; then
+    original_description='<empty>'
+  else
+    original_description='<invalid>'
+  fi
+  printf 'devbox: terminal %s is unavailable; using %s\n' \
+    "$original_description" "$fallback_term" >&2
+  TERM="$fallback_term"
+  export TERM
+fi
+
+if [[ -r /etc/profile.d/devbox-secrets.sh ]]; then
+  # shellcheck source=/dev/null
+  source /etc/profile.d/devbox-secrets.sh
+fi
 cd "$HOME/workspace"
 
 if [[ -n "${SSH_ORIGINAL_COMMAND:-}" ]]; then

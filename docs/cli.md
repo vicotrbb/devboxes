@@ -40,7 +40,12 @@ Run login once per profile:
 devbox login --url https://devboxes.example.com
 ```
 
-The CLI verifies the token through `/api/v1/whoami`, then writes `config.toml` with mode `0600` on Unix. The default location is the operating system configuration directory under `devbox/config.toml`.
+The CLI binds a temporary callback to an ephemeral port on `127.0.0.1`, opens the external
+system browser, and requests approval from the current Devboxes browser session. It uses a
+high-entropy state value and PKCE S256, exchanges the one-time code automatically, verifies
+the scoped token through `/api/v1/whoami`, then writes `config.toml` with mode `0600` on
+Unix. The default location is the operating system configuration directory under
+`devbox/config.toml`.
 
 Values resolve in this order:
 
@@ -60,13 +65,30 @@ Never pass tokens through shared scripts, process listings, logs, or committed f
 
 ### `devbox login`
 
-Store and verify controller credentials.
+Authorize and verify the CLI through the system browser.
 
 ```bash
 devbox login --url https://devboxes.example.com
 ```
 
-The token is prompted without terminal echo unless `--token` or `DEVBOX_TOKEN` supplies it.
+The default flow never prompts for a token in the terminal. If the browser has no valid
+Devboxes session, it first shows the existing operator token login page, then returns to an
+explicit Approve or Deny decision. Approval issues a scoped token that expires after the
+controller's configured CLI token lifetime, 30 days by default. No refresh token is issued.
+
+Use `--no-open` to print the authorization URL while the CLI continues waiting on its
+loopback callback. `--timeout SECONDS` changes the finite wait, from 10 to 900 seconds. If
+browser launching fails, the CLI prints the same URL and continues waiting.
+
+Headless automation remains compatible:
+
+```bash
+DEVBOX_TOKEN="$AUTOMATION_TOKEN" devbox login --url https://devboxes.example.com
+devbox --token "$AUTOMATION_TOKEN" login --url https://devboxes.example.com
+```
+
+Prefer `DEVBOX_TOKEN` over `--token` so the credential does not enter shell history. These
+paths use the supplied master token directly and do not start a browser callback.
 
 ### `devbox create NAME`
 
@@ -115,6 +137,11 @@ devbox ssh atlas -- -A
 ```
 
 Arguments after `--` are passed to OpenSSH before the destination. The CLI sets a host-key alias scoped to the controller installation and devbox name, uses `StrictHostKeyChecking=accept-new`, and sends keepalives every 30 seconds.
+
+The workspace preserves a safe, installed client `TERM` entry, including
+`xterm-ghostty`. Unknown future or malformed values fall back deterministically with one
+warning instead of disconnecting. `COLORTERM` remains available and tmux uses the installed
+`tmux-256color` entry internally.
 
 ### `devbox stop NAME`
 

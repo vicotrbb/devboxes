@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     max_ttl_hours: int = Field(default=168, le=168)
     cleanup_interval_seconds: int = 60
     session_ttl_seconds: int = 43_200
+    authorization_code_ttl_seconds: int = Field(default=120, ge=30, le=600)
+    authorization_code_store_size: int = Field(default=1024, ge=16, le=10_000)
+    cli_token_ttl_seconds: int = Field(default=2_592_000, ge=300, le=31_536_000)
+    cli_signing_key: SecretStr | None = None
     cookie_secure: bool = True
     kubeconfig_context: str | None = None
     log_level: str = "INFO"
@@ -53,6 +57,7 @@ class Settings(BaseSettings):
         "workspace_service_host",
         "workspace_load_balancer_class",
         "kubeconfig_context",
+        "cli_signing_key",
         mode="before",
     )
     @classmethod
@@ -72,12 +77,27 @@ class Settings(BaseSettings):
             raise ValueError("must be an absolute http or https URL")
         return value
 
-    @field_validator("default_ttl_hours", "max_ttl_hours", "cleanup_interval_seconds")
+    @field_validator(
+        "default_ttl_hours",
+        "max_ttl_hours",
+        "cleanup_interval_seconds",
+        "authorization_code_ttl_seconds",
+        "authorization_code_store_size",
+        "cli_token_ttl_seconds",
+    )
     @classmethod
     def positive_integer(cls, value: int) -> int:
         """Require positive timing and TTL configuration values."""
         if value <= 0:
             raise ValueError("must be positive")
+        return value
+
+    @field_validator("cli_signing_key")
+    @classmethod
+    def cli_signing_key_is_strong(cls, value: SecretStr | None) -> SecretStr | None:
+        """Require a dedicated CLI signing key to carry strong entropy when set."""
+        if value is not None and len(value.get_secret_value().strip()) < 32:
+            raise ValueError("CLI signing key must contain at least 32 characters")
         return value
 
     @field_validator("access_token")

@@ -18,6 +18,12 @@ controller:
   maxTtlHours: 168
   cleanupIntervalSeconds: 60
   sessionTtlSeconds: 43200
+  authorizationCodeTtlSeconds: 120
+  authorizationCodeStoreSize: 1024
+  cliTokenTtlSeconds: 2592000
+  # Optional key in controller.existingSecret. Empty derives a domain-separated
+  # signing key from accessTokenKey so no new mandatory credential is required.
+  cliSigningKeyKey: ""
   logLevel: INFO
   resources:
     requests:

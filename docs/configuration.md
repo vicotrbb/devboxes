@@ -3,9 +3,9 @@
 Use a values file for durable installations:
 
 ```bash
-helm show values oci://ghcr.io/vicotrbb/charts/devboxes --version 0.1.2 > values.yaml
+helm show values oci://ghcr.io/vicotrbb/charts/devboxes --version 0.2.0 > values.yaml
 helm upgrade --install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
-  --version 0.1.2 \
+  --version 0.2.0 \
   --namespace devboxes \
   --create-namespace \
   --values values.yaml
@@ -29,9 +29,18 @@ When `scripts/install.sh` runs from a source checkout, it uses the local chart b
 | `controller.cookieSecure` | `false` | Set `true` whenever the external URL uses HTTPS |
 | `controller.defaultTtlHours` | `24` | Default compute auto-stop TTL |
 | `controller.maxTtlHours` | `168` | Maximum accepted TTL, up to seven days |
+| `controller.authorizationCodeTtlSeconds` | `120` | Lifetime of one-time CLI authorization codes |
+| `controller.authorizationCodeStoreSize` | `1024` | Maximum pending authorization codes retained in memory |
+| `controller.cliTokenTtlSeconds` | `2592000` | Scoped CLI token lifetime, 30 days by default |
+| `controller.cliSigningKeyKey` | empty | Optional signing-key field in `controller.existingSecret` |
 | `controller.resources` | requests 100m/128Mi, limit 512Mi | Controller requests and limits |
 
 The chart also exposes controller replicas, pull secrets, session lifetime, cleanup interval, log level, labels, annotations, node selectors, tolerations, and affinity in `values.yaml`.
+
+When `controller.cliSigningKeyKey` is empty, the controller derives the signing key from the
+master access token using a versioned, domain-separated HMAC. Set the field only if the
+existing controller Secret contains a dedicated key of at least 32 characters. Rotating the
+master token in derived mode, or rotating the dedicated key, revokes all issued CLI tokens.
 
 ## Workspace
 

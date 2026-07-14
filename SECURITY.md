@@ -32,7 +32,12 @@ Recommended deployment controls:
 - keep Kubernetes, ingress, CSI, images, chart, and CLI releases current;
 - verify release checksums and image provenance attestations.
 
-The CLI refuses plaintext HTTP except exact loopback hosts. It has no skip-TLS-verification option. Workspace SSH disables password, keyboard-interactive, and root login and uses persistent Ed25519 host keys.
+The CLI refuses plaintext controller URLs except exact loopback hosts. Browser login uses an
+external browser, a `127.0.0.1` ephemeral callback, state validation, PKCE S256, one-time
+authorization codes, and expiring scoped tokens. It has no skip-TLS-verification option.
+Workspace SSH disables password, keyboard-interactive, and root login and uses persistent
+Ed25519 host keys. Incoming terminal names are validated against installed terminfo before
+tmux starts.
 
 ## Dependency and supply-chain policy
 

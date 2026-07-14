@@ -6,7 +6,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::models::{CreateDevbox, DeleteResult, Devbox, DevboxList, WhoAmI};
+use crate::models::{
+    CliTokenRequest, CliTokenResponse, CreateDevbox, DeleteResult, Devbox, DevboxList, WhoAmI,
+};
 
 pub struct ApiClient {
     base_url: String,
@@ -16,17 +18,33 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn new(base_url: String, token: String) -> Result<Self> {
-        let http = Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
-            .user_agent(concat!("devbox-cli/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .context("failed to initialize HTTP client")?;
         Ok(Self {
             base_url,
             token,
-            http,
+            http: http_client()?,
         })
+    }
+
+    pub async fn exchange_cli_code(
+        base_url: &str,
+        code: &str,
+        code_verifier: &str,
+        redirect_uri: &str,
+    ) -> Result<CliTokenResponse> {
+        let response = http_client()?
+            .post(format!("{base_url}/api/v1/auth/cli/token"))
+            .header("Accept", "application/json")
+            .json(&CliTokenRequest {
+                grant_type: "authorization_code",
+                code,
+                code_verifier,
+                client_id: "devbox-cli",
+                redirect_uri,
+            })
+            .send()
+            .await
+            .context("failed to exchange browser authorization")?;
+        decode_response(response).await
     }
 
     pub async fn whoami(&self) -> Result<WhoAmI> {
@@ -99,20 +117,33 @@ impl ApiClient {
             .send()
             .await
             .context("failed to reach Devboxes API")?;
-        let status = response.status();
-        if status == StatusCode::NO_CONTENT {
-            bail!("the API returned no content where a response was expected");
-        }
-        if !status.is_success() {
-            let payload = response.json::<Value>().await.unwrap_or(Value::Null);
-            let detail = api_error_detail(&payload);
-            bail!("Devboxes API returned {status}: {detail}");
-        }
-        response
-            .json::<R>()
-            .await
-            .context("Devboxes API returned an invalid response")
+        decode_response(response).await
     }
+}
+
+fn http_client() -> Result<Client> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .user_agent(concat!("devbox-cli/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("failed to initialize HTTP client")
+}
+
+async fn decode_response<R: DeserializeOwned>(response: reqwest::Response) -> Result<R> {
+    let status = response.status();
+    if status == StatusCode::NO_CONTENT {
+        bail!("the API returned no content where a response was expected");
+    }
+    if !status.is_success() {
+        let payload = response.json::<Value>().await.unwrap_or(Value::Null);
+        let detail = api_error_detail(&payload);
+        bail!("Devboxes API returned {status}: {detail}");
+    }
+    response
+        .json::<R>()
+        .await
+        .context("Devboxes API returned an invalid response")
 }
 
 fn api_error_detail(payload: &Value) -> String {

@@ -4,6 +4,25 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-13
+
+### Added
+
+- Added native CLI browser authorization with an external system browser, numeric loopback callback, high-entropy state, PKCE S256, CSRF-protected approval and denial, automatic code exchange, and `--no-open` support.
+- Added versioned, scoped, expiring CLI bearer tokens with strict claim validation, an optional dedicated signing key, and a domain-separated key derived from the existing access token by default.
+- Added a pinned Ghostty `xterm-ghostty` terminfo source with upstream MIT attribution, broad ncurses terminfo packages, and image-level tmux regression coverage.
+
+### Changed
+
+- Changed interactive `devbox login` to eliminate terminal token prompting while preserving explicit `--token` and `DEVBOX_TOKEN` compatibility for automation and headless use.
+- Changed `devbox-shell` to validate and preserve installed terminal capabilities, retain `DEVBOX_ORIGINAL_TERM` and `COLORTERM`, and fall back deterministically for unknown or untrusted terminal names.
+- Configured tmux to use the installed `tmux-256color` entry internally and advertise truecolor only for known capable terminal families.
+
+### Security
+
+- Authorization codes are opaque, hash-only at rest, bounded, automatically pruned, bound to the exact client, redirect, PKCE challenge, subject, and expiry, and atomically consumed once.
+- CLI authorization and token responses use no-store and referrer protections; login return targets and loopback redirects reject open redirects, non-numeric hosts, unexpected paths, and unsupported PKCE methods.
+
 ## [0.1.2] - 2026-07-13
 
 ### Fixed
@@ -41,7 +60,8 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 - Portable Helm chart with values schema, namespace-scoped RBAC, configurable storage, ingress, LoadBalancer or NodePort SSH, ServiceMonitor, and disruption budget.
 - macOS and Linux CLI releases, SHA-256 verification installer, GHCR images, OCI chart publishing, image provenance attestations, and clean Kind install CI.
 
-[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/vicotrbb/devboxes/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/vicotrbb/devboxes/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/vicotrbb/devboxes/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/vicotrbb/devboxes/releases/tag/v0.1.0
