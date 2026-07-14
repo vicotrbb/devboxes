@@ -310,16 +310,18 @@ ssh \
 
 for terminal in xterm-ghostty completely-unknown-future-terminal; do
   terminal_log="$temporary_directory/interactive-$terminal.log"
-  ssh \
-    -i "$temporary_directory/id_ed25519" \
-    -p "$ssh_port" \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    dev@127.0.0.1 \
-    'tmux kill-server 2>/dev/null || true'
+  if [[ "$terminal" != xterm-ghostty ]]; then
+    ssh \
+      -i "$temporary_directory/id_ed25519" \
+      -p "$ssh_port" \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      dev@127.0.0.1 \
+      'tmux kill-server 2>/dev/null || true'
+  fi
   # The variables expand in the remote shell inside tmux, not in this process.
   # shellcheck disable=SC2016
-  printf 'printf "interactive-term=%%s original=%%s\\n" "$TERM" "$DEVBOX_ORIGINAL_TERM"\ntmux detach-client\n' \
+  { printf 'printf "interactive-term=%%s original=%%s\\n" "$TERM" "$DEVBOX_ORIGINAL_TERM"\ntmux detach-client\n'; sleep 1; } \
     | TERM="$terminal" ssh -tt \
       -i "$temporary_directory/id_ed25519" \
       -p "$ssh_port" \
