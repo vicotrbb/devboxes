@@ -39,6 +39,7 @@ def test_deployment_is_hardened_and_ready_for_tmux_workspace() -> None:
     assert container["resources"]["limits"] == {"memory": "8Gi"}
     assert "cpu" not in container["resources"]["limits"]
     assert container["securityContext"]["allowPrivilegeEscalation"] is True
+    assert "AUDIT_WRITE" in container["securityContext"]["capabilities"]["add"]
     assert "SYS_CHROOT" in container["securityContext"]["capabilities"]["add"]
     assert "SYS_ADMIN" not in container["securityContext"]["capabilities"]["add"]
     secret_volume = next(

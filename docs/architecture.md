@@ -51,7 +51,7 @@ The workspace entrypoint refuses to start without `SSH_AUTHORIZED_KEYS`. It prep
 - Workspace Secrets are mounted read-only with mode `0440`, scoped to the workspace group, and are not embedded in either image.
 - The controller runs as a non-root user with a read-only root filesystem and all Linux capabilities dropped.
 - The workspace runs as root during initialization, then exposes only the unprivileged `dev` SSH user. Password login and root login are disabled.
-- The trusted `dev` user has passwordless `sudo`. The pod adds only `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`, `SETUID`, and `SYS_CHROOT`; `SYS_ADMIN` and privileged mode are not used.
+- The trusted `dev` user has passwordless `sudo`. The pod adds only `AUDIT_WRITE`, `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`, `SETUID`, and `SYS_CHROOT`; `AUDIT_WRITE` lets OpenSSH allocate audited PTYs, while `SYS_ADMIN` and privileged mode are not used.
 - SSH host checking uses a stable alias scoped to both the Devboxes installation and box name, preventing collisions across installations.
 - CLI callbacks accept only exact HTTP loopback URIs with numeric loopback hosts, explicit non-privileged ports, and `/callback`; login return targets accept only the internal authorization route.
 
