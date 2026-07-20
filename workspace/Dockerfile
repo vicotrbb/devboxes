@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 FROM rust:1.97-bookworm AS rust-toolchain
 FROM node:24.18-bookworm AS node-toolchain
-FROM ghcr.io/astral-sh/uv:0.11.28 AS uv-toolchain
+FROM ghcr.io/astral-sh/uv:0.11.29 AS uv-toolchain
 FROM python:3.14-bookworm
 
 LABEL org.opencontainers.image.title="Devboxes Workspace" \
