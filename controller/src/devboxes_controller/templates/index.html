@@ -54,7 +54,9 @@
             <h2 id="create-title">Create a devbox</h2>
             <p>Compute expires into a safe stopped state. Your volume is never deleted automatically.</p>
           </div>
-          <span class="capacity-note">{{ storage_class }} storage · {{ workspace_service_type }} SSH · OCI images</span>
+          <span class="capacity-note">
+            {{ storage_class }} storage · {{ workspace_service_type }} SSH{% if gpu.enabled %} · GPU profiles{% endif %}
+          </span>
         </div>
 
         <form id="create-form" class="create-form">
@@ -84,6 +86,19 @@
               {% if hours <= max_ttl_hours %}
               <option value="{{ hours }}"{% if hours == default_ttl_hours %} selected{% endif %}>{{ label }}</option>
               {% endif %}
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field field-accelerator">
+            <label for="gpu-profile">Accelerator <span>optional</span></label>
+            <select id="gpu-profile" name="gpu_profile"{% if not gpu.enabled %} disabled{% endif %}>
+              <option value="">
+                {% if gpu.enabled %}CPU only{% else %}CPU only · GPU disabled{% endif %}
+              </option>
+              {% for profile in gpu.profiles %}
+              <option value="{{ profile.name }}">
+                {{ profile.display_name }} · {{ profile.count }} unit{% if profile.count != 1 %}s{% endif %}{% if profile.default %} · default{% endif %}
+              </option>
               {% endfor %}
             </select>
           </div>

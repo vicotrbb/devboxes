@@ -26,3 +26,11 @@ Devboxes is installed in namespace {{ .Release.Namespace }}.
 Important: every workspace needs an externally reachable SSH service. Configure
 workspace.sshService for your cluster's LoadBalancer implementation or use
 NodePort with workspace.sshService.host.
+{{- if .Values.gpu.enabled }}
+
+GPU acceleration is enabled with {{ len .Values.gpu.profiles }} operator-approved profile(s).
+Confirm the matching node drivers, device resources, runtimes, and workspace images,
+then inspect the user catalog with:
+
+   devbox gpu profiles
+{{- end }}

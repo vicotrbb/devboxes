@@ -37,6 +37,7 @@
             <a href="#quick-start">Quick start</a>
             <a href="#lifecycle">What persists</a>
             <a href="#create">Create a box</a>
+            <a href="#gpu">GPU acceleration</a>
             <a href="#ssh-tmux">SSH and tmux</a>
             <a href="#accounts">Accounts and tools</a>
             <a href="#daily-workflow">Daily workflow</a>
@@ -221,6 +222,62 @@ devbox create nightly --preset small --no-wait</code></pre>
             <li><strong>large</strong> is for memory-heavy builds, databases, or parallel tooling.</li>
             <li>Reusing a retained volume can expand it for a larger preset; volumes are never shrunk.</li>
           </ul>
+        </section>
+
+        <section class="docs-section" id="gpu" tabindex="-1">
+          <h2>Use an operator-approved GPU</h2>
+          {% if gpu.enabled %}
+          <p>
+            This installation exposes {{ gpu.profiles | length }} GPU profile{% if gpu.profiles | length != 1 %}s{% endif %}.
+            CPU-only remains the default. In the CLI, <code>--gpu</code> selects the operator's default and
+            <code>--gpu-profile</code> selects an exact profile. The workbench offers the same catalog.
+          </p>
+
+          <div class="docs-table-wrap" tabindex="0" aria-label="Available GPU profile table; scroll horizontally if needed">
+            <table class="docs-table">
+              <thead>
+                <tr>
+                  <th scope="col">Profile</th>
+                  <th scope="col">Accelerator</th>
+                  <th scope="col">Allocation</th>
+                  <th scope="col">Purpose</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for profile in gpu.profiles %}
+                <tr>
+                  <th scope="row"><code>{{ profile.name }}</code>{% if profile.default %} · default{% endif %}</th>
+                  <td>{{ profile.display_name }}</td>
+                  <td>{{ profile.count }} x <code>{{ profile.resource_name }}</code></td>
+                  <td>{{ profile.description or "Operator-approved GPU workload" }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="command-block">
+            <div class="command-heading">
+              <span>Discover and request GPU profiles</span>
+              <button class="command-copy" type="button" data-copy-target="gpu-command" aria-label="Copy GPU commands">Copy</button>
+            </div>
+            <pre><code id="gpu-command">devbox gpu profiles
+devbox create inference --gpu --ssh
+devbox create training --gpu-profile {{ gpu.profiles[0].name }} --preset large --ssh</code></pre>
+          </div>
+
+          <p>
+            The selected profile is pinned to the devbox Deployment, including its resource name,
+            count, image override, runtime class, supplemental groups, node selector, and tolerations. Stop and start
+            preserve that allocation; deleting and recreating lets you choose a different profile.
+          </p>
+          {% else %}
+          <p>
+            GPU acceleration is disabled on this installation. New boxes are CPU-only. An operator
+            can enable named profiles through the Helm chart after installing a compatible device
+            driver and container runtime on GPU nodes.
+          </p>
+          {% endif %}
         </section>
 
         <section class="docs-section" id="ssh-tmux" tabindex="-1">

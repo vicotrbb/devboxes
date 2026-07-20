@@ -56,6 +56,75 @@ master token in derived mode, or rotating the dedicated key, revokes all issued 
 
 The namespace must permit the workspace pod's documented `sudo` capability set. Kubernetes Pod Security `baseline` is compatible; `restricted` is not.
 
+## GPU acceleration
+
+GPU acceleration is disabled by default. Operators configure one or more named profiles and choose a default profile for `devbox create --gpu`. CPU-only creation remains available regardless of whether GPU support is enabled.
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `gpu.enabled` | `false` | Publish configured profiles and accept GPU requests |
+| `gpu.defaultProfile` | empty | Profile selected by CLI `--gpu`; required when enabled |
+| `gpu.profiles[].name` | none | Stable lowercase identifier exposed to clients |
+| `gpu.profiles[].displayName` | none | Human-readable accelerator name |
+| `gpu.profiles[].description` | empty | Short workload or service-level description |
+| `gpu.profiles[].resourceName` | none | Vendor-qualified Kubernetes extended resource |
+| `gpu.profiles[].count` | none | Integer resource units requested and limited |
+| `gpu.profiles[].workspaceImage` | empty | Optional complete GPU-capable Devboxes workspace image |
+| `gpu.profiles[].runtimeClassName` | empty | Optional existing RuntimeClass selected for the pod |
+| `gpu.profiles[].supplementalGroups` | `[]` | Up to eight non-root device group IDs required by the node runtime |
+| `gpu.profiles[].nodeSelector` | `{}` | Optional operator-owned GPU node labels |
+| `gpu.profiles[].tolerations` | `[]` | Optional taint tolerations limited to standard fields |
+
+Example NVIDIA profile:
+
+```yaml
+gpu:
+  enabled: true
+  defaultProfile: nvidia-l4
+  profiles:
+    - name: nvidia-l4
+      displayName: NVIDIA L4
+      description: One dedicated L4 for inference and CUDA development
+      resourceName: nvidia.com/gpu
+      count: 1
+      workspaceImage: ghcr.io/example/devboxes-workspace-cuda:12.8
+      runtimeClassName: nvidia
+      nodeSelector:
+        accelerator: nvidia-l4
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+```
+
+Example AMD profile:
+
+```yaml
+gpu:
+  enabled: true
+  defaultProfile: amd-rocm
+  profiles:
+    - name: amd-rocm
+      displayName: AMD ROCm GPU
+      description: One GPU for ROCm development
+      resourceName: amd.com/gpu
+      count: 1
+      workspaceImage: ghcr.io/example/devboxes-workspace-rocm:6.4
+      supplementalGroups: [44, 109]
+      nodeSelector:
+        accelerator: amd-rocm
+```
+
+The AMD group IDs are examples only. Use the actual `video`, `render`, or vendor device groups required by your node image and runtime. Omit `supplementalGroups` when device permissions already work for the `dev` user. Group zero is rejected.
+
+The pod receives each configured group and the workspace entrypoint adds `dev` to the matching image group, creating a `devbox-device-ID` group when the numeric ID is otherwise unnamed. This ensures OpenSSH sessions retain access after initializing the login user's groups.
+
+`workspaceImage` must preserve the complete interactive Devboxes workspace contract, including the entrypoint, `dev` user, SSH setup, persistent home layout, and runtime secret mount. Derive it from the matching released workspace image and add only the workload's pinned user-space GPU libraries. The Insights sidecar retains the installation's release workspace image, so a profile override cannot replace its privacy sanitizer. A host driver, device plugin, and container runtime remain cluster prerequisites.
+
+The chart rejects unknown fields, duplicate profiles, invalid Kubernetes names, unsafe toleration combinations, missing defaults, more than 32 profiles, and enabled configurations with no profiles. The controller repeats semantic validation at startup. Clients can select only a profile name; they cannot override the trusted scheduling or image policy.
+
+The resolved profile is stored with each Deployment. Changing or removing a Helm profile affects only later creations. Stop and start retain the original allocation. Delete and recreate the box to select a new profile. See [GPU acceleration](gpu.md) for the full model and operational guidance.
+
 ## SSH service
 
 For clusters with load-balancer support:

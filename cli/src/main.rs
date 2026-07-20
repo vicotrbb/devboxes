@@ -16,8 +16,8 @@ use tokio::time::{Instant, sleep};
 use client::ApiClient;
 use config::StoredConfig;
 use models::{
-    CollectorStatus, CreateDevbox, Devbox, InsightsActivity, InsightsActivityData,
-    InsightsEnvelope, InsightsStatusData, InsightsSummary, Preset,
+    CollectorStatus, CreateDevbox, Devbox, GpuCapabilities, GpuRequest, InsightsActivity,
+    InsightsActivityData, InsightsEnvelope, InsightsStatusData, InsightsSummary, Preset,
 };
 
 #[derive(Parser)]
@@ -63,6 +63,8 @@ enum Commands {
     Delete(DeleteArgs),
     /// Inspect privacy-preserving AI and repository metrics.
     Metrics(MetricsArgs),
+    /// Inspect GPU acceleration profiles configured by the operator.
+    Gpu(GpuArgs),
 }
 
 #[derive(Args)]
@@ -92,6 +94,14 @@ struct CreateArgs {
     #[arg(long)]
     repo: Option<String>,
 
+    /// Request the operator's default GPU profile.
+    #[arg(long)]
+    gpu: bool,
+
+    /// Request a specific operator-approved GPU profile (implies --gpu).
+    #[arg(long, value_name = "PROFILE", value_parser = validate_name)]
+    gpu_profile: Option<String>,
+
     /// Return immediately instead of waiting for SSH readiness.
     #[arg(long)]
     no_wait: bool,
@@ -99,6 +109,18 @@ struct CreateArgs {
     /// Connect as soon as the devbox becomes ready.
     #[arg(long)]
     ssh: bool,
+}
+
+#[derive(Args)]
+struct GpuArgs {
+    #[command(subcommand)]
+    command: Option<GpuCommand>,
+}
+
+#[derive(Subcommand)]
+enum GpuCommand {
+    /// List the GPU profiles available for new devboxes.
+    Profiles,
 }
 
 #[derive(Args)]
@@ -249,6 +271,7 @@ async fn main() -> Result<()> {
         Commands::Stop(args) => lifecycle(&client, &args.name, false, cli.json).await,
         Commands::Delete(args) => delete(&client, args).await,
         Commands::Metrics(args) => metrics(&client, args, cli.json).await,
+        Commands::Gpu(args) => gpu(&client, args, cli.json).await,
     }
 }
 
@@ -358,11 +381,19 @@ async fn create(
     json: bool,
     server_alias: &str,
 ) -> Result<()> {
+    let gpu = if args.gpu || args.gpu_profile.is_some() {
+        Some(GpuRequest {
+            profile: args.gpu_profile.as_deref(),
+        })
+    } else {
+        None
+    };
     let payload = CreateDevbox {
         name: &args.name,
         preset: args.preset,
         ttl_hours: args.ttl,
         repository: args.repo.as_deref(),
+        gpu,
     };
     let mut box_info = client.create(&payload).await?;
     if !args.no_wait || args.ssh {
@@ -387,16 +418,17 @@ async fn list(client: &ApiClient, json: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<22} {:<11} {:<8} {:<16} SSH",
-        "NAME", "STATE", "SIZE", "AUTO-STOP"
+        "{:<22} {:<11} {:<8} {:<16} {:<18} SSH",
+        "NAME", "STATE", "SIZE", "AUTO-STOP", "ACCELERATOR"
     );
     for box_info in boxes {
         println!(
-            "{:<22} {:<11} {:<8} {:<16} {}",
+            "{:<22} {:<11} {:<8} {:<16} {:<18} {}",
             box_info.name,
             box_info.state,
             box_info.preset,
             human_expiry(&box_info),
+            gpu_label(&box_info),
             box_info.ssh_command.as_deref().unwrap_or("pending"),
         );
     }
@@ -520,6 +552,43 @@ async fn metrics(client: &ApiClient, args: MetricsArgs, json: bool) -> Result<()
         }
     }
     Ok(())
+}
+
+async fn gpu(client: &ApiClient, args: GpuArgs, json: bool) -> Result<()> {
+    let GpuArgs { command } = args;
+    match command {
+        None | Some(GpuCommand::Profiles) => {
+            let capabilities = client.capabilities().await?.gpu;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&capabilities)?);
+            } else {
+                print_gpu_profiles(&capabilities);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_gpu_profiles(capabilities: &GpuCapabilities) {
+    if !capabilities.enabled {
+        println!("GPU acceleration is disabled by the operator.");
+        return;
+    }
+    println!(
+        "{:<18} {:<26} {:>5} {:<28} DESCRIPTION",
+        "PROFILE", "NAME", "COUNT", "RESOURCE"
+    );
+    for profile in &capabilities.profiles {
+        println!(
+            "{:<18} {:<26} {:>5} {:<28} {}{}",
+            profile.name,
+            profile.display_name,
+            profile.count,
+            profile.resource_name,
+            profile.description.as_deref().unwrap_or(""),
+            if profile.is_default { " (default)" } else { "" },
+        );
+    }
 }
 
 fn metrics_query(filters: &MetricsFilters) -> Vec<(String, String)> {
@@ -706,7 +775,11 @@ async fn wait_until_ready(client: &ApiClient, name: &str, timeout: Duration) -> 
             );
         }
         if Instant::now() >= deadline {
-            bail!("timed out waiting for {name} to become ready");
+            let detail = box_info
+                .message
+                .as_deref()
+                .map_or_else(String::new, |message| format!(": {message}"));
+            bail!("timed out waiting for {name} to become ready{detail}");
         }
         sleep(Duration::from_secs(2)).await;
     }
@@ -768,6 +841,12 @@ fn print_box(box_info: &Devbox, json: bool) -> Result<()> {
     println!("{}  {}", box_info.name, box_info.state);
     println!("  preset:     {}", box_info.preset);
     println!("  storage:    {}", box_info.storage_size);
+    if let Some(gpu) = &box_info.gpu {
+        println!(
+            "  accelerator: {} ({} x {})",
+            gpu.display_name, gpu.count, gpu.resource_name
+        );
+    }
     println!("  auto-stop:  {}", box_info.expires_at.to_rfc3339());
     if let Some(repository) = &box_info.repository {
         println!("  repository: {repository}");
@@ -778,6 +857,13 @@ fn print_box(box_info: &Devbox, json: bool) -> Result<()> {
         println!("  status:     {message}");
     }
     Ok(())
+}
+
+fn gpu_label(box_info: &Devbox) -> &str {
+    box_info
+        .gpu
+        .as_ref()
+        .map_or("cpu", |gpu| gpu.profile.as_str())
 }
 
 fn human_expiry(box_info: &Devbox) -> String {
@@ -797,8 +883,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        Cli, Commands, MetricsCommand, human_duration, metrics_query, resolve_login_token,
-        ssh_arguments, validate_name,
+        Cli, Commands, GpuCommand, MetricsCommand, human_duration, metrics_query,
+        resolve_login_token, ssh_arguments, validate_name,
     };
 
     #[test]
@@ -887,6 +973,51 @@ mod tests {
     fn metrics_rejects_unknown_providers_and_invalid_box_names() {
         assert!(Cli::try_parse_from(["devbox", "metrics", "--provider", "other"]).is_err());
         assert!(Cli::try_parse_from(["devbox", "metrics", "--box", "Invalid"]).is_err());
+    }
+
+    #[test]
+    fn create_accepts_default_and_named_gpu_profiles() {
+        let default_gpu = Cli::try_parse_from(["devbox", "create", "atlas", "--gpu"]).unwrap();
+        let Commands::Create(default_gpu) = default_gpu.command else {
+            panic!("expected create command");
+        };
+        assert!(default_gpu.gpu);
+        assert!(default_gpu.gpu_profile.is_none());
+
+        let named_gpu =
+            Cli::try_parse_from(["devbox", "create", "atlas", "--gpu-profile", "nvidia-l4"])
+                .unwrap();
+        let Commands::Create(named_gpu) = named_gpu.command else {
+            panic!("expected create command");
+        };
+        assert!(!named_gpu.gpu);
+        assert_eq!(named_gpu.gpu_profile.as_deref(), Some("nvidia-l4"));
+        assert!(
+            Cli::try_parse_from([
+                "devbox",
+                "create",
+                "atlas",
+                "--gpu-profile",
+                "Invalid_Profile",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn gpu_profiles_command_is_discoverable() {
+        let root = Cli::try_parse_from(["devbox", "gpu"]).unwrap();
+        let Commands::Gpu(root) = root.command else {
+            panic!("expected gpu command");
+        };
+        assert!(root.command.is_none());
+
+        let profiles = Cli::try_parse_from(["devbox", "gpu", "profiles", "--json"]).unwrap();
+        assert!(profiles.json);
+        let Commands::Gpu(profiles) = profiles.command else {
+            panic!("expected gpu command");
+        };
+        assert!(matches!(profiles.command, Some(GpuCommand::Profiles)));
     }
 
     #[test]

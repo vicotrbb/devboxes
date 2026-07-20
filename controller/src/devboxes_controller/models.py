@@ -37,6 +37,27 @@ class InsightsState(StrEnum):
     RESTART_REQUIRED = "restart_required"
 
 
+class GpuRequest(BaseModel):
+    """Request an operator-approved GPU profile for one workspace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: str | None = Field(default=None, min_length=1, max_length=40)
+
+    @field_validator("profile")
+    @classmethod
+    def valid_profile(cls, value: str | None) -> str | None:
+        """Normalize and validate a configured GPU profile name."""
+        if value is None:
+            return None
+        value = value.strip().lower()
+        if not DEVBOX_NAME_RE.fullmatch(value):
+            raise ValueError(
+                "use 1-40 lowercase letters, digits, or hyphens; start and end alphanumeric"
+            )
+        return value
+
+
 class CreateDevboxRequest(BaseModel):
     """Validate a request to create a devbox."""
 
@@ -46,6 +67,7 @@ class CreateDevboxRequest(BaseModel):
     preset: Preset = Preset.SMALL
     ttl_hours: int = Field(default=24, ge=1, le=168)
     repository: str | None = Field(default=None, max_length=240)
+    gpu: GpuRequest | None = None
 
     @field_validator("name")
     @classmethod
@@ -70,6 +92,15 @@ class CreateDevboxRequest(BaseModel):
         return value
 
 
+class GpuAllocation(BaseModel):
+    """Describe the pinned GPU allocation attached to a devbox."""
+
+    profile: str
+    display_name: str
+    resource_name: str
+    count: int
+
+
 class Devbox(BaseModel):
     """Represent the observable state of one managed devbox."""
 
@@ -87,6 +118,7 @@ class Devbox(BaseModel):
     restarts: int = 0
     storage_size: str
     message: str | None = None
+    gpu: GpuAllocation | None = None
     instance_id: str | None = None
     insights_state: InsightsState = InsightsState.DISABLED
 
@@ -102,6 +134,31 @@ class WhoAmI(BaseModel):
 
     user: str
     mode: str
+
+
+class GpuProfileSummary(BaseModel):
+    """Expose a safe user-facing view of one configured GPU profile."""
+
+    name: str
+    display_name: str
+    description: str | None = None
+    resource_name: str
+    count: int
+    default: bool = False
+
+
+class GpuCapabilities(BaseModel):
+    """Describe the GPU feature and profiles available to API clients."""
+
+    enabled: bool
+    default_profile: str | None = None
+    profiles: list[GpuProfileSummary]
+
+
+class Capabilities(BaseModel):
+    """Describe installation capabilities that shape user workflows."""
+
+    gpu: GpuCapabilities
 
 
 class CliTokenRequest(BaseModel):

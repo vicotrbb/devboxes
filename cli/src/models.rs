@@ -22,11 +22,27 @@ impl std::fmt::Display for Preset {
 }
 
 #[derive(Debug, Serialize)]
+pub struct GpuRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct CreateDevbox<'a> {
     pub name: &'a str,
     pub preset: Preset,
     pub ttl_hours: u16,
     pub repository: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<GpuRequest<'a>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GpuAllocation {
+    pub profile: String,
+    pub display_name: String,
+    pub resource_name: String,
+    pub count: u16,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -45,6 +61,8 @@ pub struct Devbox {
     pub restarts: u32,
     pub storage_size: String,
     pub message: Option<String>,
+    #[serde(default)]
+    pub gpu: Option<GpuAllocation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +79,29 @@ pub struct DeleteResult {
 pub struct WhoAmI {
     pub user: String,
     pub mode: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Capabilities {
+    pub gpu: GpuCapabilities,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GpuCapabilities {
+    pub enabled: bool,
+    pub default_profile: Option<String>,
+    pub profiles: Vec<GpuProfileSummary>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GpuProfileSummary {
+    pub name: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub resource_name: String,
+    pub count: u16,
+    #[serde(rename = "default")]
+    pub is_default: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -209,4 +250,81 @@ pub struct InsightsPurgeResult {
     #[serde(rename = "box")]
     pub box_name: String,
     pub purged_instances: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{CreateDevbox, Devbox, GpuRequest, Preset};
+
+    #[test]
+    fn create_payload_omits_cpu_only_gpu_state() {
+        let payload = CreateDevbox {
+            name: "atlas",
+            preset: Preset::Medium,
+            ttl_hours: 24,
+            repository: None,
+            gpu: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(payload).unwrap(),
+            json!({
+                "name": "atlas",
+                "preset": "medium",
+                "ttl_hours": 24,
+                "repository": null
+            })
+        );
+    }
+
+    #[test]
+    fn create_payload_distinguishes_default_and_named_gpu_profiles() {
+        let default_gpu = CreateDevbox {
+            name: "inference",
+            preset: Preset::Small,
+            ttl_hours: 24,
+            repository: None,
+            gpu: Some(GpuRequest { profile: None }),
+        };
+        let named_gpu = CreateDevbox {
+            name: "training",
+            preset: Preset::Large,
+            ttl_hours: 72,
+            repository: None,
+            gpu: Some(GpuRequest {
+                profile: Some("nvidia-l4"),
+            }),
+        };
+
+        assert_eq!(serde_json::to_value(default_gpu).unwrap()["gpu"], json!({}));
+        assert_eq!(
+            serde_json::to_value(named_gpu).unwrap()["gpu"],
+            json!({"profile": "nvidia-l4"})
+        );
+    }
+
+    #[test]
+    fn devbox_deserialization_accepts_pre_gpu_controller_responses() {
+        let box_info: Devbox = serde_json::from_value(json!({
+            "name": "atlas",
+            "state": "ready",
+            "preset": "medium",
+            "created_at": "2026-07-20T12:00:00Z",
+            "expires_at": "2026-07-21T12:00:00Z",
+            "repository": null,
+            "ssh_host": "192.0.2.10",
+            "ssh_port": 22,
+            "ssh_command": "ssh dev@192.0.2.10",
+            "pod_name": "devbox-atlas-example",
+            "pod_ready": true,
+            "restarts": 0,
+            "storage_size": "30Gi",
+            "message": null
+        }))
+        .unwrap();
+
+        assert!(box_info.gpu.is_none());
+    }
 }

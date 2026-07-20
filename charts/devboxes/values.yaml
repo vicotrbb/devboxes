@@ -57,6 +57,28 @@ workspace:
     externalTrafficPolicy: Cluster
     loadBalancerSourceRanges: []
 
+# GPU acceleration is opt-in. Each profile maps a stable user-facing name to
+# one device-plugin or DRA-bridged extended resource and trusted scheduling policy.
+gpu:
+  enabled: false
+  defaultProfile: ""
+  # Example profile fields:
+  # - name: nvidia-l4
+  #   displayName: NVIDIA L4
+  #   description: One dedicated GPU
+  #   resourceName: nvidia.com/gpu
+  #   count: 1
+  #   workspaceImage: registry.example/devboxes-workspace-cuda:12.8
+  #   runtimeClassName: nvidia
+  #   supplementalGroups: []
+  #   nodeSelector:
+  #     accelerator: nvidia-l4
+  #   tolerations:
+  #     - key: nvidia.com/gpu
+  #       operator: Exists
+  #       effect: NoSchedule
+  profiles: []
+
 insights:
   enabled: false
   # Optional key in controller.existingSecret. Empty derives a dedicated,

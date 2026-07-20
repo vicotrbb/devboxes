@@ -7,8 +7,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::models::{
-    CliTokenRequest, CliTokenResponse, CreateDevbox, DeleteResult, Devbox, DevboxList,
-    InsightsActivityData, InsightsEnvelope, InsightsPurgeResult, InsightsStatusData,
+    Capabilities, CliTokenRequest, CliTokenResponse, CreateDevbox, DeleteResult, Devbox,
+    DevboxList, InsightsActivityData, InsightsEnvelope, InsightsPurgeResult, InsightsStatusData,
     InsightsSummary, WhoAmI,
 };
 
@@ -51,6 +51,11 @@ impl ApiClient {
 
     pub async fn whoami(&self) -> Result<WhoAmI> {
         self.request(Method::GET, "/api/v1/whoami", Option::<&()>::None)
+            .await
+    }
+
+    pub async fn capabilities(&self) -> Result<Capabilities> {
+        self.request(Method::GET, "/api/v1/capabilities", Option::<&()>::None)
             .await
     }
 

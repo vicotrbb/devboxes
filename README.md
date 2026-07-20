@@ -23,6 +23,7 @@ Each workspace includes Rust, Node.js, Python, `uv`, GitHub CLI, Codex CLI, Clau
 - A Rust `devbox` CLI for create, list, inspect, SSH, start, stop, delete, and opt-in Insights workflows.
 - A FastAPI controller with an authenticated API, accessible browser workbench, Insights dashboard, documentation, metrics, health checks, and TTL cleanup.
 - A versioned Helm chart with values schema validation and namespace-scoped RBAC.
+- Optional operator-approved GPU profiles for NVIDIA, AMD, Intel, partitioned, or shared accelerators.
 - Multi-architecture controller and workspace images for `linux/amd64` and `linux/arm64`.
 - Persistent SSH host identity, shell state, tool installs, account state, and source under `/home/dev`.
 - GitHub Releases with macOS and Linux CLI binaries and SHA-256 checksums.
@@ -39,6 +40,8 @@ Devboxes is currently a single-operator system: one shared token controls every 
   - reachable Kubernetes nodes and `workspace.sshService.type=NodePort`.
 - An SSH public key.
 - An ingress controller and TLS certificate only if you expose the dashboard through ingress. Port-forwarding works without either.
+
+GPU acceleration additionally requires GPU nodes, a working vendor device plugin or a Dynamic Resource Allocation driver with a compatible extended-resource bridge, and a workspace image containing the user-space libraries needed by the workload. GPU support is opt-in and CPU-only remains the safe default.
 
 The workspace container intentionally supports passwordless `sudo` for the trusted development user. Its pod drops all capabilities and adds back a small set needed by `sudo` and OpenSSH PTY auditing, but it is not compatible with the Kubernetes `restricted` Pod Security profile. Use the `baseline` profile or an equivalent policy in the Devboxes namespace.
 
@@ -132,6 +135,40 @@ For clusters without a load balancer, let Kubernetes allocate a distinct NodePor
 
 See [configuration](docs/configuration.md) for every supported value and platform examples.
 
+### Enable GPU acceleration
+
+Operators expose trusted, named profiles instead of allowing clients to inject Kubernetes pod fields. Each profile binds a user-facing name to an extended resource, count, optional GPU-ready workspace image, and optional scheduling policy:
+
+```yaml
+gpu:
+  enabled: true
+  defaultProfile: nvidia-l4
+  profiles:
+    - name: nvidia-l4
+      displayName: NVIDIA L4
+      description: One dedicated L4 for inference and CUDA development
+      resourceName: nvidia.com/gpu
+      count: 1
+      workspaceImage: ghcr.io/example/devboxes-workspace-cuda:12.8
+      runtimeClassName: nvidia
+      nodeSelector:
+        accelerator: nvidia-l4
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+```
+
+After upgrading the release with this values file, users can discover and request profiles through every supported interface:
+
+```bash
+devbox gpu profiles
+devbox create inference --gpu --ssh
+devbox create training --gpu-profile nvidia-l4 --preset large --ssh
+```
+
+The dashboard exposes the same profiles in its create form. Devboxes sets the resource in both container requests and limits, preserves the resolved allocation across stop and start, and surfaces scheduler reasons when capacity is unavailable. Read [GPU acceleration](docs/gpu.md) for driver prerequisites, NVIDIA and AMD examples, image contracts, sharing, security, upgrades, and troubleshooting.
+
 ### Enable Insights
 
 Insights is disabled by default. Enable it to collect privacy-bounded local AI metrics and aggregate Git activity into a persistent controller database:
@@ -178,6 +215,7 @@ Authenticate and create a box:
 ```bash
 devbox login --url https://devboxes.example.com
 devbox create atlas --preset medium --ttl 24 --repo owner/project --ssh
+devbox create inference --gpu --ssh
 ```
 
 Login opens the system browser, asks the current Devboxes browser session to approve the
@@ -247,7 +285,7 @@ devbox CLI / browser
 Devboxes controller ─── Kubernetes API
           │                  │
           │                  ├─ Secret (scoped Insights ingest credential)
-          │                  ├─ Deployment (disposable compute)
+          │                  ├─ Deployment (disposable CPU or GPU compute)
           │                  ├─ Service (LoadBalancer or NodePort SSH)
           │                  └─ PVC (persistent /home/dev)
           ├─ TTL cleanup and lifecycle state
@@ -274,6 +312,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change. Security repo
 
 - [Golden path](docs/golden-path.md) for a performance-oriented installation and daily workflow.
 - [CLI reference](docs/cli.md) and [API reference](docs/api.md) for client contracts.
+- [GPU acceleration](docs/gpu.md) for accelerator profiles, images, scheduling, and operations.
 - [Insights](docs/insights.md) for telemetry semantics, privacy, storage, backup, and purge.
 - [Configuration](docs/configuration.md) and [credentials](docs/credentials.md) for installation details.
 - [Operations](docs/operations.md) and [troubleshooting](docs/troubleshooting.md) for production ownership.

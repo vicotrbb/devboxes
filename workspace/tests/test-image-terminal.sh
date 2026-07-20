@@ -3,7 +3,13 @@ set -Eeuo pipefail
 
 image="${1:-devboxes-workspace:local}"
 container="devboxes-terminal-test-$RANDOM"
-trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT INT TERM
+group_container="devboxes-gpu-group-test-$RANDOM"
+temporary_directory="$(mktemp -d)"
+cleanup() {
+  docker rm -f "$container" "$group_container" >/dev/null 2>&1 || true
+  rm -rf "$temporary_directory"
+}
+trap cleanup EXIT INT TERM
 
 docker run -d --name "$container" --entrypoint /bin/bash "$image" -lc \
   'mkdir -p /home/dev/workspace && chown -R dev:dev /home/dev && exec sleep infinity' >/dev/null
@@ -40,4 +46,21 @@ if [[ "$unknown_output" == *'missing or unsuitable terminal'* ]]; then
   exit 1
 fi
 
-printf 'Verified xterm-ghostty and unknown TERM keep tmux alive in %s.\n' "$image"
+ssh-keygen -q -t ed25519 -N '' -f "$temporary_directory/id_ed25519"
+docker run -d --name "$group_container" \
+  --group-add 4242 \
+  --group-add 4343 \
+  --env DEVBOX_GPU_SUPPLEMENTAL_GROUPS=4242,4343 \
+  --volume "$temporary_directory/id_ed25519.pub:/run/devbox-secrets/SSH_AUTHORIZED_KEYS:ro" \
+  "$image" >/dev/null
+for _ in {1..20}; do
+  if docker exec "$group_container" runuser -u dev -- id -G >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.25
+done
+dev_groups="$(docker exec "$group_container" runuser -u dev -- id -G)"
+grep -Eq '(^| )4242( |$)' <<< "$dev_groups"
+grep -Eq '(^| )4343( |$)' <<< "$dev_groups"
+
+printf 'Verified terminal handling and GPU device groups in %s.\n' "$image"

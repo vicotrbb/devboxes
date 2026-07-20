@@ -20,6 +20,7 @@ test:
 
 helm:
 	scripts/test-helm-insights.sh
+	scripts/test-helm-gpu.sh
 	helm template devboxes charts/devboxes --namespace devboxes --set workspace.sshService.type=NodePort --set workspace.sshService.host=192.0.2.10 >/dev/null
 
 images:

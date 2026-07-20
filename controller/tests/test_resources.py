@@ -2,8 +2,13 @@ from datetime import UTC, datetime
 
 import pytest
 
+from devboxes_controller.config import GpuProfile, GpuToleration
 from devboxes_controller.models import CreateDevboxRequest, Preset
 from devboxes_controller.resources import (
+    ANNOTATION_GPU_CONFIG,
+    ANNOTATION_GPU_COUNT,
+    ANNOTATION_GPU_PROFILE,
+    ANNOTATION_GPU_RESOURCE,
     ANNOTATION_INSTANCE_ID,
     ANNOTATION_TTL_HOURS,
     build_deployment,
@@ -140,3 +145,56 @@ def test_enabled_insights_requires_a_complete_scoped_configuration() -> None:
             "devboxes-workspace",
             insights_enabled=True,
         )
+
+
+def test_gpu_profile_is_applied_only_to_the_workspace_container() -> None:
+    instance_id = "99999999-9999-4999-8999-999999999999"
+    profile = GpuProfile(
+        name="nvidia-l4",
+        displayName="NVIDIA L4",
+        description="One dedicated inference GPU",
+        resourceName="nvidia.com/gpu",
+        count=1,
+        workspaceImage="registry.example/devboxes-cuda:12.8",
+        runtimeClassName="nvidia",
+        supplementalGroups=[44, 109],
+        nodeSelector={"accelerator": "nvidia"},
+        tolerations=[GpuToleration(key="nvidia.com/gpu", operator="Exists", effect="NoSchedule")],
+    )
+    deployment = build_deployment(
+        request(),
+        "devboxes",
+        "ghcr.io/vicotrbb/devboxes-workspace:test",
+        "devboxes-workspace",
+        "devboxes-workspace",
+        gpu_profile=profile,
+        instance_id=instance_id,
+        insights_enabled=True,
+        insights_endpoint="http://devboxes:8000",
+        insights_credential=f"v1.{instance_id}.atlas.{'a' * 43}",
+    )
+    annotations = deployment["metadata"]["annotations"]
+    pod = deployment["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    environment = {item["name"]: item["value"] for item in container["env"]}
+
+    assert annotations[ANNOTATION_GPU_PROFILE] == "nvidia-l4"
+    assert annotations[ANNOTATION_GPU_RESOURCE] == "nvidia.com/gpu"
+    assert annotations[ANNOTATION_GPU_COUNT] == "1"
+    assert '"runtimeClassName":"nvidia"' in annotations[ANNOTATION_GPU_CONFIG]
+    assert container["image"] == "registry.example/devboxes-cuda:12.8"
+    assert container["resources"]["requests"]["nvidia.com/gpu"] == 1
+    assert container["resources"]["limits"]["nvidia.com/gpu"] == 1
+    assert environment["DEVBOX_GPU_PROFILE"] == "nvidia-l4"
+    assert environment["DEVBOX_GPU_RESOURCE"] == "nvidia.com/gpu"
+    assert environment["DEVBOX_GPU_COUNT"] == "1"
+    assert environment["DEVBOX_GPU_SUPPLEMENTAL_GROUPS"] == "44,109"
+    assert pod["runtimeClassName"] == "nvidia"
+    assert pod["securityContext"]["supplementalGroups"] == [44, 109]
+    assert pod["nodeSelector"] == {"accelerator": "nvidia"}
+    assert pod["tolerations"] == [
+        {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
+    ]
+    assert "nvidia.com/gpu" not in pod["containers"][1]["resources"]["requests"]
+    assert "nvidia.com/gpu" not in pod["containers"][1]["resources"]["limits"]
+    assert pod["containers"][1]["image"] == "ghcr.io/vicotrbb/devboxes-workspace:test"

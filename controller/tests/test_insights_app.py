@@ -31,6 +31,14 @@ def enabled_app(tmp_path: Path) -> tuple[TestClient, Settings]:
 
 
 def otlp_batch(batch_id: str = "a" * 64) -> bytes:
+    payload = json.loads((FIXTURES / "claude-2.1.205-otlp.json").read_text())
+    observed_ns = str(int(datetime.now(UTC).timestamp() * 1_000_000_000))
+    for resource_metrics in payload["resourceMetrics"]:
+        for scope_metrics in resource_metrics["scopeMetrics"]:
+            for metric in scope_metrics["metrics"]:
+                for data_point in metric.get("sum", {}).get("dataPoints", []):
+                    data_point["startTimeUnixNano"] = observed_ns
+                    data_point["timeUnixNano"] = observed_ns
     return json.dumps(
         {
             "schema_version": 1,
@@ -38,7 +46,7 @@ def otlp_batch(batch_id: str = "a" * 64) -> bytes:
             "sent_at": datetime.now(UTC).isoformat(),
             "collector": "otel",
             "kind": "otlp",
-            "payload": json.loads((FIXTURES / "claude-2.1.205-otlp.json").read_text()),
+            "payload": payload,
         }
     ).encode()
 
@@ -76,10 +84,11 @@ def test_authenticated_ingest_drives_summary_series_export_and_purge(tmp_path: P
         "Content-Encoding": "gzip",
     }
     api_headers = {"Authorization": f"Bearer {MASTER_TOKEN}"}
+    batch = gzip.compress(otlp_batch())
     with client:
         accepted = client.post(
             "/internal/v1/insights/batches",
-            content=gzip.compress(otlp_batch()),
+            content=batch,
             headers=ingest_headers,
         )
         assert accepted.status_code == 200
@@ -87,7 +96,7 @@ def test_authenticated_ingest_drives_summary_series_export_and_purge(tmp_path: P
 
         duplicate = client.post(
             "/internal/v1/insights/batches",
-            content=gzip.compress(otlp_batch()),
+            content=batch,
             headers=ingest_headers,
         )
         assert duplicate.json()["duplicate"] is True

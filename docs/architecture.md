@@ -29,7 +29,32 @@ The controller translates lifecycle operations into native Kubernetes resources 
 - One `PersistentVolumeClaim` per devbox, mounted at `/home/dev`.
 - When Insights is enabled, one scoped ingest `Secret` per devbox and one central Insights `PersistentVolumeClaim` for the controller.
 
-Resource names are deterministic (`devbox-NAME`), and labels plus annotations carry controller ownership, creation time, expiry, preset, repository, and retained storage size.
+Resource names are deterministic (`devbox-NAME`), and labels plus annotations carry controller ownership, creation time, expiry, preset, repository, retained storage size, and any resolved GPU allocation.
+
+## GPU resolution path
+
+GPU acceleration adds an operator-owned policy layer without changing resource ownership:
+
+```text
+Helm GPU profiles
+       |
+       v
+validated controller settings
+       |
+       +---- authenticated capability catalog ----> CLI and dashboard
+       |
+user selects profile name
+       |
+       v
+resolved pinned snapshot
+       |
+       v
+Deployment pod template ----> scheduler ----> device plugin or DRA-bridged resource
+```
+
+The create API accepts only an optional profile name. The controller resolves that name before any Kubernetes write, then applies the trusted image override, RuntimeClass, supplemental groups, node selector, tolerations, and extended resource count. It writes the extended resource to both requests and limits on the main container. Insights and other sidecars do not receive GPU resources. The Insights sidecar also remains on the installation's release workspace image, preserving its pinned privacy sanitizer when the interactive container uses a specialized GPU image.
+
+The resolved profile is stored as a bounded Deployment annotation. Existing boxes therefore retain their allocation across stop, start, TTL expiry, and template reconciliation even if the Helm catalog later changes. Capability discovery publishes only profile names, labels, descriptions, resources, and counts. Scheduling details and images remain operator policy.
 
 ## Persistence model
 
@@ -53,6 +78,7 @@ The workspace entrypoint refuses to start without `SSH_AUTHORIZED_KEYS`. It prep
 
 - Controller RBAC is a Role scoped to the release namespace; it cannot manage cluster-wide resources.
 - Workspace service accounts have no RBAC binding and do not mount Kubernetes API tokens.
+- GPU clients can choose only a configured profile name. They cannot inject images, device resources, RuntimeClasses, supplemental groups, selectors, tolerations, privileged mode, host paths, or device paths.
 - Workspace Secrets are mounted read-only with mode `0440`, scoped to the workspace group, and are not embedded in either image.
 - Each Insights ingest credential is HMAC-signed, write-only, scoped to one box and UUID instance, and stored in a dedicated namespaced Secret. It is never a controller, browser, or CLI credential.
 - The controller runs as a non-root user with a read-only root filesystem and all Linux capabilities dropped.
@@ -78,6 +104,10 @@ Presets specify requests and memory limits while intentionally leaving CPU burst
 | large | 2 | 4Gi | 16Gi | 50Gi |
 
 A retained PVC is expanded when a larger preset is requested, subject to the StorageClass supporting expansion. PVCs are never shrunk.
+
+GPU profiles add one vendor-qualified extended resource with the same integer value in requests and limits. Kubernetes extended resources are not overcommitted unless the installed device plugin intentionally advertises shared units. Optional selectors and tolerations direct boxes to operator-prepared GPU pools; an optional RuntimeClass activates a non-default vendor runtime.
+
+The controller does not guess capacity or reserve a device before creation. Kubernetes scheduling is the source of truth. A box stays `starting` when capacity or constraints cannot be satisfied, and the controller exposes the `PodScheduled=False` reason to the CLI and dashboard. Device plugins remain responsible for allocation and device injection.
 
 ## Availability
 

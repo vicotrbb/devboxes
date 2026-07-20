@@ -13,6 +13,8 @@ Provide one reliable SSH exposure path:
 
 Keep `externalTrafficPolicy: Cluster` for the portable default. Use `Local` only after confirming that the load balancer health checks and routing send traffic to the node hosting the devbox pod. `Local` can remove an extra node hop, but incorrect health routing makes SSH unavailable.
 
+For GPU workloads, first install and verify the vendor driver, device plugin or Dynamic Resource Allocation driver with a compatible extended-resource bridge, and container runtime outside Devboxes. Confirm the intended extended resource appears in node allocatable capacity. Label and taint GPU pools deliberately, then encode those choices in named Devboxes profiles. Follow [GPU acceleration](gpu.md) before enabling the feature.
+
 ## 2. Use a pinned release and durable values
 
 Store installation values in version control without secrets. Pin the chart version and image tags by installing one release version as a unit.
@@ -58,6 +60,8 @@ Workspace creation uses `imagePullPolicy: IfNotPresent`. The first devbox schedu
 
 Do not depend on a cache existing on only one node. Kubernetes may schedule the next workspace elsewhere. Keep registry credentials valid even when images are pre-pulled.
 
+GPU profiles may select a larger derived workspace image. Pre-pull each configured GPU image only on nodes eligible for that profile, and validate host driver compatibility before making the profile the default.
+
 ## 4. Install and verify the CLI
 
 Use the checksummed release installer, authenticate over HTTPS, and verify the identity returned by the controller.
@@ -89,6 +93,15 @@ The command waits for the pod, OpenSSH, and the Service address, then connects t
 
 Choose `small` for light editing and administrative work. Choose `large` for memory-heavy builds, multiple language servers, or local inference. If a process is OOM-killed or the pod is evicted under memory pressure, move to a larger preset. A retained PVC expands when a larger preset is used, but it never shrinks.
 
+When GPU profiles are enabled, discover them before creating an accelerated box:
+
+```bash
+devbox gpu profiles
+devbox create inference --gpu --preset medium --ssh
+```
+
+CPU and memory presets remain independent from accelerator selection. Start with the smallest preset that satisfies host-side preprocessing and compilation, then measure before increasing it.
+
 ## 6. Tune in the right order
 
 Measure before changing the cluster. Startup and interactive performance usually improve in this order:
@@ -98,6 +111,8 @@ Measure before changing the cluster. Startup and interactive performance usually
 3. Enough allocatable CPU and memory to satisfy the preset request without contention.
 4. A direct, healthy SSH network path from the client to the workspace Service.
 5. A larger preset when the workload, rather than the platform, is resource-bound.
+
+For a GPU box, also verify advertised device capacity, profile selectors, taints, RuntimeClass availability, and the derived workspace image. A valid profile can remain queued when all matching devices are allocated; the scheduler reason appears in `devbox status`.
 
 Use these checks for a slow or pending box:
 

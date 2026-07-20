@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from .config import GpuProfile
 from .models import CreateDevboxRequest, Preset
 
 MANAGED_BY = "devboxes-controller"
@@ -20,6 +21,10 @@ ANNOTATION_AUTO_STOPPED_AT = "devboxes.bonalab.org/auto-stopped-at"
 ANNOTATION_INSTANCE_ID = "insights.devboxes.bonalab.org/instance-id"
 ANNOTATION_INSIGHTS_STATE = "insights.devboxes.bonalab.org/state"
 ANNOTATION_INSIGHTS_TEMPLATE_HASH = "insights.devboxes.bonalab.org/template-hash"
+ANNOTATION_GPU_PROFILE = "gpu.devboxes.bonalab.org/profile"
+ANNOTATION_GPU_RESOURCE = "gpu.devboxes.bonalab.org/resource"
+ANNOTATION_GPU_COUNT = "gpu.devboxes.bonalab.org/count"
+ANNOTATION_GPU_CONFIG = "gpu.devboxes.bonalab.org/resolved-config"
 
 
 PRESETS: dict[Preset, dict[str, str]] = {
@@ -64,6 +69,7 @@ def annotations(
     request: CreateDevboxRequest,
     now: datetime | None = None,
     instance_id: str | None = None,
+    gpu_profile: GpuProfile | None = None,
 ) -> dict[str, str]:
     """Return lifecycle and user-input annotations for a new devbox."""
     now = now or datetime.now(UTC)
@@ -78,6 +84,19 @@ def annotations(
         result[ANNOTATION_REPOSITORY] = request.repository
     if instance_id:
         result[ANNOTATION_INSTANCE_ID] = instance_id
+    if gpu_profile is not None:
+        result.update(
+            {
+                ANNOTATION_GPU_PROFILE: gpu_profile.name,
+                ANNOTATION_GPU_RESOURCE: gpu_profile.resource_name,
+                ANNOTATION_GPU_COUNT: str(gpu_profile.count),
+                ANNOTATION_GPU_CONFIG: json.dumps(
+                    gpu_profile.model_dump(mode="json", by_alias=True, exclude_none=True),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            }
+        )
     return result
 
 
@@ -117,6 +136,7 @@ def build_deployment(
     workspace_service_account_name: str,
     workspace_priority_class: str | None = None,
     image_pull_secret: str | None = None,
+    gpu_profile: GpuProfile | None = None,
     now: datetime | None = None,
     instance_id: str | None = None,
     insights_enabled: bool = False,
@@ -131,12 +151,32 @@ def build_deployment(
     """Build the disposable workspace Deployment for a devbox."""
     name = resource_name(request.name)
     box_labels = labels(request.name)
+    effective_workspace_image = (
+        gpu_profile.workspace_image
+        if gpu_profile is not None and gpu_profile.workspace_image is not None
+        else workspace_image
+    )
     env = [
         {"name": "DEVBOX_NAME", "value": request.name},
         {"name": "DEVBOX_PRESET", "value": request.preset.value},
     ]
     if request.repository:
         env.append({"name": "DEVBOX_REPOSITORY", "value": request.repository})
+    if gpu_profile is not None:
+        env.extend(
+            [
+                {"name": "DEVBOX_GPU_PROFILE", "value": gpu_profile.name},
+                {"name": "DEVBOX_GPU_RESOURCE", "value": gpu_profile.resource_name},
+                {"name": "DEVBOX_GPU_COUNT", "value": str(gpu_profile.count)},
+            ]
+        )
+        if gpu_profile.supplemental_groups:
+            env.append(
+                {
+                    "name": "DEVBOX_GPU_SUPPLEMENTAL_GROUPS",
+                    "value": ",".join(str(group) for group in gpu_profile.supplemental_groups),
+                }
+            )
     if insights_enabled:
         env.extend(
             [
@@ -180,7 +220,7 @@ def build_deployment(
         "containers": [
             {
                 "name": "devbox",
-                "image": workspace_image,
+                "image": effective_workspace_image,
                 "imagePullPolicy": "IfNotPresent",
                 "ports": [{"name": "ssh", "containerPort": 2222, "protocol": "TCP"}],
                 "env": env,
@@ -255,6 +295,23 @@ def build_deployment(
         pod_spec["priorityClassName"] = workspace_priority_class
     if image_pull_secret:
         pod_spec["imagePullSecrets"] = [{"name": image_pull_secret}]
+    if gpu_profile is not None:
+        main_resources = pod_spec["containers"][0]["resources"]
+        main_resources["requests"][gpu_profile.resource_name] = gpu_profile.count
+        main_resources["limits"][gpu_profile.resource_name] = gpu_profile.count
+        if gpu_profile.runtime_class_name:
+            pod_spec["runtimeClassName"] = gpu_profile.runtime_class_name
+        if gpu_profile.supplemental_groups:
+            pod_spec["securityContext"]["supplementalGroups"] = list(
+                gpu_profile.supplemental_groups
+            )
+        if gpu_profile.node_selector:
+            pod_spec["nodeSelector"] = dict(gpu_profile.node_selector)
+        if gpu_profile.tolerations:
+            pod_spec["tolerations"] = [
+                toleration.model_dump(mode="json", by_alias=True, exclude_none=True)
+                for toleration in gpu_profile.tolerations
+            ]
 
     if insights_enabled:
         if not all((instance_id, insights_endpoint, insights_credential)):
@@ -274,6 +331,8 @@ def build_deployment(
         pod_spec["containers"].append(
             {
                 "name": "insights-agent",
+                # Keep the privacy boundary on the release workspace image. A
+                # profile image overrides only the interactive workspace.
                 "image": workspace_image,
                 "imagePullPolicy": "IfNotPresent",
                 "command": ["python3", "/usr/local/bin/devbox-insights-agent"],
@@ -315,10 +374,19 @@ def build_deployment(
             }
         )
 
-    deployment_annotations = annotations(request, now, instance_id)
+    deployment_annotations = annotations(request, now, instance_id, gpu_profile)
     deployment_annotations[ANNOTATION_INSIGHTS_STATE] = (
         "collecting" if insights_enabled else "disabled"
     )
+    template_annotations = {ANNOTATION_INSTANCE_ID: instance_id} if instance_id is not None else {}
+    if gpu_profile is not None:
+        template_annotations.update(
+            {
+                ANNOTATION_GPU_PROFILE: gpu_profile.name,
+                ANNOTATION_GPU_RESOURCE: gpu_profile.resource_name,
+                ANNOTATION_GPU_COUNT: str(gpu_profile.count),
+            }
+        )
     manifest: dict[str, Any] = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -339,9 +407,7 @@ def build_deployment(
             "template": {
                 "metadata": {
                     "labels": box_labels,
-                    "annotations": (
-                        {ANNOTATION_INSTANCE_ID: instance_id} if instance_id is not None else {}
-                    ),
+                    "annotations": template_annotations,
                 },
                 "spec": pod_spec,
             },
