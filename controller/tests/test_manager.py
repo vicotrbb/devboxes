@@ -6,19 +6,23 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from kubernetes.client.exceptions import ApiException
 
-from devboxes_controller.config import Settings
+from devboxes_controller.config import GpuProfile, Settings
 from devboxes_controller.manager import (
     DevboxConflictError,
     DevboxManager,
     DevboxNotFoundError,
+    _gpu_allocation,
+    _resolved_gpu_profile,
     _service_endpoint,
     _state,
     _ttl_hours,
 )
-from devboxes_controller.models import CreateDevboxRequest, DevboxState, Preset
+from devboxes_controller.models import CreateDevboxRequest, DevboxState, GpuRequest, Preset
 from devboxes_controller.resources import (
     ANNOTATION_CREATED_AT,
     ANNOTATION_EXPIRES_AT,
+    ANNOTATION_GPU_CONFIG,
+    ANNOTATION_GPU_PROFILE,
     ANNOTATION_INSIGHTS_STATE,
     ANNOTATION_INSTANCE_ID,
     ANNOTATION_PRESET,
@@ -175,6 +179,27 @@ def test_state_reports_readiness_and_known_failures() -> None:
     )
 
 
+def test_state_surfaces_scheduler_capacity_failures() -> None:
+    pending_pod = SimpleNamespace(
+        status=SimpleNamespace(
+            phase="Pending",
+            conditions=[
+                SimpleNamespace(
+                    type="PodScheduled",
+                    status="False",
+                    message="0/3 nodes are available: 3 Insufficient nvidia.com/gpu.",
+                )
+            ],
+            container_statuses=[],
+        )
+    )
+
+    assert _state(1, pending_pod, False, None) == (
+        DevboxState.STARTING,
+        "Scheduling blocked: 0/3 nodes are available: 3 Insufficient nvidia.com/gpu.",
+    )
+
+
 def test_start_renews_the_original_ttl_atomically() -> None:
     apps = Mock()
     apps.read_namespaced_deployment.return_value = SimpleNamespace(
@@ -299,6 +324,57 @@ def test_create_uses_portable_node_port_and_default_storage_configuration() -> N
     assert "nodePort" not in service["spec"]["ports"][0]
 
 
+def test_create_resolves_the_default_gpu_profile_before_kubernetes_writes() -> None:
+    apps = Mock()
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    core = Mock()
+    core.read_namespaced_persistent_volume_claim.side_effect = ApiException(status=404)
+    profile = GpuProfile(
+        name="nvidia-l4",
+        displayName="NVIDIA L4",
+        resourceName="nvidia.com/gpu",
+        count=1,
+    )
+    manager = DevboxManager(
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            gpu_enabled=True,
+            gpu_default_profile="nvidia-l4",
+            gpu_profiles=[profile],
+        ),
+        apps_api=apps,
+        core_api=core,
+    )
+    manager.get = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
+
+    asyncio.run(manager.create(CreateDevboxRequest(name="atlas", gpu=GpuRequest())))
+
+    deployment = apps.create_namespaced_deployment.call_args.args[1]
+    assert deployment["metadata"]["annotations"][ANNOTATION_GPU_PROFILE] == "nvidia-l4"
+    assert (
+        deployment["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"][
+            "nvidia.com/gpu"
+        ]
+        == 1
+    )
+
+
+def test_create_rejects_gpu_requests_when_the_feature_is_disabled() -> None:
+    apps = Mock()
+    core = Mock()
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=core,
+    )
+
+    with pytest.raises(ValueError, match="disabled by the operator"):
+        asyncio.run(manager.create(CreateDevboxRequest(name="atlas", gpu=GpuRequest())))
+
+    apps.read_namespaced_deployment.assert_not_called()
+    core.create_namespaced_persistent_volume_claim.assert_not_called()
+
+
 def _legacy_deployment(replicas: int) -> SimpleNamespace:
     now = datetime.now(UTC)
     return SimpleNamespace(
@@ -321,6 +397,29 @@ def _legacy_deployment(replicas: int) -> SimpleNamespace:
             ),
         ),
     )
+
+
+def test_resolved_gpu_profile_snapshot_survives_later_operator_changes() -> None:
+    profile = GpuProfile(
+        name="nvidia-l4",
+        displayName="NVIDIA L4",
+        resourceName="nvidia.com/gpu",
+        count=1,
+        runtimeClassName="nvidia",
+    )
+    annotations = {
+        ANNOTATION_GPU_PROFILE: profile.name,
+        ANNOTATION_GPU_CONFIG: profile.model_dump_json(by_alias=True, exclude_none=True),
+    }
+    settings = Settings(access_token="test-access-token-at-least-32-characters")
+
+    assert _resolved_gpu_profile(annotations, settings) == profile
+    assert _gpu_allocation(annotations).model_dump() == {
+        "profile": "nvidia-l4",
+        "display_name": "NVIDIA L4",
+        "resource_name": "nvidia.com/gpu",
+        "count": 1,
+    }
 
 
 def test_insights_create_scopes_identity_to_the_retained_home_volume() -> None:
@@ -412,6 +511,60 @@ def test_stopped_legacy_workspace_template_is_reconciled_without_starting_it() -
     containers = patch["spec"]["template"]["spec"]["containers"]
     assert [item["name"] for item in containers] == ["devbox", "insights-agent"]
     assert patch["metadata"]["annotations"][ANNOTATION_INSIGHTS_STATE] == "collecting"
+
+
+def test_insights_reconciliation_uses_the_pinned_gpu_snapshot() -> None:
+    profile = GpuProfile(
+        name="amd-rocm",
+        displayName="AMD ROCm GPU",
+        resourceName="amd.com/gpu",
+        count=1,
+        workspaceImage="registry.example/devboxes-rocm:6.4",
+        runtimeClassName="gpu-runtime",
+        supplementalGroups=[44, 109],
+    )
+    deployment = _legacy_deployment(0)
+    deployment.metadata.annotations.update(
+        {
+            ANNOTATION_GPU_PROFILE: profile.name,
+            ANNOTATION_GPU_CONFIG: profile.model_dump_json(
+                by_alias=True,
+                exclude_none=True,
+            ),
+        }
+    )
+    apps = Mock()
+    apps.list_namespaced_deployment.return_value = SimpleNamespace(items=[deployment])
+    apps.read_namespaced_deployment.return_value = _legacy_deployment(0)
+    core = Mock()
+    core.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(
+            annotations={ANNOTATION_INSTANCE_ID: "99999999-9999-4999-8999-999999999999"}
+        )
+    )
+    manager = DevboxManager(
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            insights_enabled=True,
+        ),
+        apps_api=apps,
+        core_api=core,
+    )
+
+    assert asyncio.run(manager.reconcile_insights()) == ["atlas"]
+
+    patch = apps.patch_namespaced_deployment.call_args.args[2]
+    pod = patch["spec"]["template"]["spec"]
+    main, sidecar = pod["containers"]
+    main_environment = {item["name"]: item["value"] for item in main["env"]}
+    assert main["image"] == "registry.example/devboxes-rocm:6.4"
+    assert main["resources"]["requests"]["amd.com/gpu"] == 1
+    assert main["resources"]["limits"]["amd.com/gpu"] == 1
+    assert main_environment["DEVBOX_GPU_SUPPLEMENTAL_GROUPS"] == "44,109"
+    assert pod["runtimeClassName"] == "gpu-runtime"
+    assert pod["securityContext"]["supplementalGroups"] == [44, 109]
+    assert sidecar["image"] == manager.settings.workspace_image
+    assert "amd.com/gpu" not in sidecar["resources"]["requests"]
 
 
 def test_node_port_model_includes_allocated_port_in_ssh_command() -> None:

@@ -76,6 +76,94 @@
         }
       }
     },
+    "gpu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "defaultProfile", "profiles"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "defaultProfile": {
+          "type": "string",
+          "maxLength": 40,
+          "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)?$"
+        },
+        "profiles": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "displayName", "resourceName", "count"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40,
+                "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"
+              },
+              "displayName": {"type": "string", "minLength": 1, "maxLength": 80},
+              "description": {"type": "string", "maxLength": 160},
+              "resourceName": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 317,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*/[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$"
+              },
+              "count": {"type": "integer", "minimum": 1, "maximum": 64},
+              "workspaceImage": {
+                "type": "string",
+                "maxLength": 512,
+                "pattern": "^(?:[^[:space:]]+)?$"
+              },
+              "runtimeClassName": {
+                "type": "string",
+                "maxLength": 253,
+                "pattern": "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*)?$"
+              },
+              "supplementalGroups": {
+                "type": "array",
+                "maxItems": 8,
+                "uniqueItems": true,
+                "items": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2147483647
+                }
+              },
+              "nodeSelector": {
+                "type": "object",
+                "maxProperties": 16,
+                "propertyNames": {
+                  "maxLength": 317,
+                  "pattern": "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*/)?[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$"
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "maxLength": 63,
+                  "pattern": "^(?:[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?)?$"
+                }
+              },
+              "tolerations": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {"$ref": "#/definitions/gpuToleration"}
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"enabled": {"const": true}}},
+          "then": {
+            "properties": {
+              "defaultProfile": {"minLength": 1},
+              "profiles": {"minItems": 1}
+            }
+          }
+        }
+      ]
+    },
     "insights": {
       "type": "object",
       "additionalProperties": false,
@@ -185,6 +273,63 @@
         "repository": {"type": "string", "minLength": 1},
         "tag": {"type": "string"}
       }
+    },
+    "gpuToleration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "maxLength": 317,
+          "pattern": "^(?:(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*/)?[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?)?$"
+        },
+        "operator": {"type": "string", "enum": ["Equal", "Exists"]},
+        "value": {
+          "type": "string",
+          "maxLength": 63,
+          "pattern": "^(?:[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?)?$"
+        },
+        "effect": {
+          "type": "string",
+          "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute"]
+        },
+        "tolerationSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"operator": {"const": "Exists"}},
+            "required": ["operator"]
+          },
+          "then": {"not": {"required": ["value"]}}
+        },
+        {
+          "if": {
+            "anyOf": [
+              {"not": {"required": ["operator"]}},
+              {
+                "properties": {"operator": {"const": "Equal"}},
+                "required": ["operator"]
+              }
+            ]
+          },
+          "then": {
+            "required": ["key"],
+            "properties": {"key": {"minLength": 1}}
+          }
+        },
+        {
+          "if": {"required": ["tolerationSeconds"]},
+          "then": {
+            "required": ["effect"],
+            "properties": {"effect": {"const": "NoExecute"}}
+          }
+        }
+      ]
     }
   }
 }

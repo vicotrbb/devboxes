@@ -49,12 +49,15 @@ from .insights_service import (
 from .insights_store import QueryFilters
 from .manager import DevboxConflictError, DevboxManager, DevboxNotFoundError
 from .models import (
+    Capabilities,
     CliTokenRequest,
     CliTokenResponse,
     CreateDevboxRequest,
     DeleteResult,
     Devbox,
     DevboxList,
+    GpuCapabilities,
+    GpuProfileSummary,
     WhoAmI,
 )
 from .resources import PRESETS
@@ -72,6 +75,28 @@ DevboxName = Annotated[
 ]
 
 
+def _capabilities(settings: Settings) -> Capabilities:
+    """Build the safe installation feature contract exposed to clients."""
+    return Capabilities(
+        gpu=GpuCapabilities(
+            enabled=settings.gpu_enabled,
+            default_profile=settings.gpu_default_profile if settings.gpu_enabled else None,
+            profiles=[
+                GpuProfileSummary(
+                    name=profile.name,
+                    display_name=profile.display_name,
+                    description=profile.description,
+                    resource_name=profile.resource_name,
+                    count=profile.count,
+                    default=profile.name == settings.gpu_default_profile,
+                )
+                for profile in settings.gpu_profiles
+                if settings.gpu_enabled
+            ],
+        )
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     manager: DevboxManager | None = None,
@@ -87,6 +112,7 @@ def create_app(
         maximum_codes=settings.authorization_code_store_size,
     )
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
+    capabilities = _capabilities(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -372,6 +398,7 @@ def create_app(
                 "cluster_name": settings.cluster_name,
                 "storage_class": settings.storage_class or "cluster default",
                 "workspace_service_type": settings.workspace_service_type,
+                "gpu": capabilities.gpu,
                 "version": __version__,
             },
         )
@@ -416,6 +443,7 @@ def create_app(
                     for preset, resources in PRESETS.items()
                 ],
                 "insights_enabled": insights.enabled,
+                "gpu": capabilities.gpu,
                 "version": __version__,
             },
         )
@@ -423,6 +451,10 @@ def create_app(
     @app.get("/api/v1/whoami", tags=["auth"])
     async def whoami(auth: Auth) -> WhoAmI:
         return WhoAmI(user=auth.subject, mode=auth.mode)
+
+    @app.get("/api/v1/capabilities", tags=["system"])
+    async def installation_capabilities(_: Auth) -> Capabilities:
+        return capabilities
 
     @app.get("/api/v1/devboxes", tags=["devboxes"])
     async def list_devboxes(_: Auth) -> DevboxList:

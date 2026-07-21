@@ -1,6 +1,29 @@
 {{- if and .Values.insights.enabled (ne (int .Values.controller.replicaCount) 1) }}
 {{- fail "controller.replicaCount must be exactly 1 when insights.enabled=true" }}
 {{- end }}
+{{- $gpuProfileNames := dict }}
+{{- $gpuDefaultFound := false }}
+{{- range .Values.gpu.profiles }}
+{{- if hasKey $gpuProfileNames .name }}
+{{- fail (printf "gpu.profiles contains duplicate name %q" .name) }}
+{{- end }}
+{{- if not (trim .displayName) }}
+{{- fail (printf "gpu profile %q displayName must not be blank" .name) }}
+{{- end }}
+{{- if and .workspaceImage (contains "://" .workspaceImage) }}
+{{- fail (printf "gpu profile %q workspaceImage must not contain a URL scheme" .name) }}
+{{- end }}
+{{- $_ := set $gpuProfileNames .name true }}
+{{- if eq .name $.Values.gpu.defaultProfile }}
+{{- $gpuDefaultFound = true }}
+{{- end }}
+{{- end }}
+{{- if and .Values.gpu.defaultProfile (not $gpuDefaultFound) }}
+{{- fail "gpu.defaultProfile must name an entry in gpu.profiles" }}
+{{- end }}
+{{- if and .Values.gpu.enabled (not .Values.gpu.defaultProfile) }}
+{{- fail "gpu.defaultProfile is required when gpu.enabled=true" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -99,6 +122,12 @@ spec:
             {{- end }}
             - name: DEVBOXES_LOG_LEVEL
               value: {{ .Values.controller.logLevel | quote }}
+            - name: DEVBOXES_GPU_ENABLED
+              value: {{ .Values.gpu.enabled | quote }}
+            - name: DEVBOXES_GPU_DEFAULT_PROFILE
+              value: {{ .Values.gpu.defaultProfile | quote }}
+            - name: DEVBOXES_GPU_PROFILES
+              value: {{ .Values.gpu.profiles | toJson | quote }}
             - name: DEVBOXES_INSIGHTS_ENABLED
               value: {{ .Values.insights.enabled | quote }}
             {{- if .Values.insights.enabled }}

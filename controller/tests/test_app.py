@@ -4,13 +4,13 @@ from fastapi.testclient import TestClient
 
 from devboxes_controller.app import create_app
 from devboxes_controller.auth import pkce_s256
-from devboxes_controller.config import Settings
+from devboxes_controller.config import GpuProfile, Settings
 
 from .fakes import FakeManager
 
 
-def app_client() -> TestClient:
-    settings = Settings(
+def app_client(settings: Settings | None = None) -> TestClient:
+    settings = settings or Settings(
         access_token="test-access-token-at-least-32-characters",
         cookie_secure=False,
         cleanup_interval_seconds=3600,
@@ -79,7 +79,7 @@ def test_browser_login_and_dashboard_session() -> None:
         assert dashboard.headers["x-content-type-options"] == "nosniff"
         assert "Kubernetes connected" in dashboard.text
         assert "cluster default storage" in dashboard.text
-        styles = client.get("/static/styles.css?v=0.3.0")
+        styles = client.get("/static/styles.css?v=0.4.0")
         assert "[hidden]" in styles.text
         assert "display: none !important" in styles.text
         payload = client.get("/api/v1/devboxes").json()
@@ -192,6 +192,74 @@ def test_api_maps_conflicts_and_missing_names() -> None:
 def test_api_requires_authentication() -> None:
     with app_client() as client:
         assert client.get("/api/v1/devboxes").status_code == 401
+        assert client.get("/api/v1/capabilities").status_code == 401
+
+
+def test_gpu_capabilities_expose_only_safe_profile_metadata() -> None:
+    settings = Settings(
+        access_token="test-access-token-at-least-32-characters",
+        cookie_secure=False,
+        cleanup_interval_seconds=3600,
+        gpu_enabled=True,
+        gpu_default_profile="nvidia-l4",
+        gpu_profiles=[
+            GpuProfile(
+                name="nvidia-l4",
+                displayName="NVIDIA L4",
+                description="One dedicated inference GPU",
+                resourceName="nvidia.com/gpu",
+                count=1,
+                workspaceImage="private.example/devboxes-cuda:12.8",
+                runtimeClassName="nvidia",
+                supplementalGroups=[44],
+            )
+        ],
+    )
+    headers = {"Authorization": "Bearer test-access-token-at-least-32-characters"}
+
+    with app_client(settings) as client:
+        response = client.get("/api/v1/capabilities", headers=headers)
+        created = client.post(
+            "/api/v1/devboxes",
+            headers=headers,
+            json={"name": "inference", "gpu": {"profile": "nvidia-l4"}},
+        )
+        browser_login(client)
+        dashboard = client.get("/")
+        documentation = client.get("/docs")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "gpu": {
+            "enabled": True,
+            "default_profile": "nvidia-l4",
+            "profiles": [
+                {
+                    "name": "nvidia-l4",
+                    "display_name": "NVIDIA L4",
+                    "description": "One dedicated inference GPU",
+                    "resource_name": "nvidia.com/gpu",
+                    "count": 1,
+                    "default": True,
+                }
+            ],
+        }
+    }
+    assert "workspaceImage" not in response.text
+    assert "runtimeClassName" not in response.text
+    assert "supplementalGroups" not in response.text
+    assert created.status_code == 201
+    assert created.json()["gpu"] == {
+        "profile": "nvidia-l4",
+        "display_name": "NVIDIA L4",
+        "resource_name": "nvidia.com/gpu",
+        "count": 1,
+    }
+    assert '<option value="nvidia-l4">' in dashboard.text
+    assert "NVIDIA L4 · 1 unit · default" in dashboard.text
+    assert "GPU profiles" in dashboard.text
+    assert "Use an operator-approved GPU" in documentation.text
+    assert "devbox create inference --gpu --ssh" in documentation.text
 
 
 def test_api_rejects_invalid_path_names_before_kubernetes() -> None:

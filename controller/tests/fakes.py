@@ -8,6 +8,7 @@ from devboxes_controller.models import (
     DeleteResult,
     Devbox,
     DevboxState,
+    GpuAllocation,
     Preset,
 )
 
@@ -16,6 +17,7 @@ def sample_devbox(
     name: str = "atlas",
     state: DevboxState = DevboxState.READY,
     preset: Preset = Preset.MEDIUM,
+    gpu: GpuAllocation | None = None,
 ) -> Devbox:
     now = datetime.now(UTC)
     ready = state is DevboxState.READY
@@ -41,13 +43,21 @@ def sample_devbox(
                 else "Preparing workspace and SSH"
             )
         ),
+        gpu=gpu,
     )
 
 
 class FakeManager:
     def __init__(self) -> None:
         self.boxes = [
-            sample_devbox(),
+            sample_devbox(
+                gpu=GpuAllocation(
+                    profile="nvidia-l4",
+                    display_name="NVIDIA L4",
+                    resource_name="nvidia.com/gpu",
+                    count=1,
+                )
+            ),
             sample_devbox("paperclip", DevboxState.STOPPED, Preset.SMALL),
             sample_devbox("nightly", DevboxState.STARTING, Preset.LARGE),
         ]
@@ -69,6 +79,18 @@ class FakeManager:
             raise DevboxConflictError(f"devbox {request.name!r} already exists")
         box = sample_devbox(request.name, DevboxState.STARTING, request.preset)
         box.repository = request.repository
+        if request.gpu is not None:
+            profile = request.gpu.profile or "nvidia-l4"
+            display_name, resource_name = {
+                "nvidia-l4": ("NVIDIA L4", "nvidia.com/gpu"),
+                "nvidia-shared": ("NVIDIA shared", "nvidia.com/gpu.shared"),
+            }.get(profile, (profile, "nvidia.com/gpu"))
+            box.gpu = GpuAllocation(
+                profile=profile,
+                display_name=display_name,
+                resource_name=resource_name,
+                count=1,
+            )
         box.ssh_host = None
         box.ssh_command = None
         box.pod_ready = False

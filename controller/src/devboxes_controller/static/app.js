@@ -119,6 +119,10 @@ function renderBox(box) {
   nameCell.scope = "row";
   nameCell.append(node("span", "devbox-name", box.name));
   const details = [box.preset, box.storage_size];
+  if (box.gpu) {
+    const unit = box.gpu.count === 1 ? "unit" : "units";
+    details.push(`${box.gpu.display_name} · ${box.gpu.count} ${unit}`);
+  }
   if (box.repository) {
     details.push(box.repository);
   }
@@ -265,6 +269,7 @@ elements.createForm.addEventListener("submit", async (event) => {
     preset: form.get("preset"),
     ttl_hours: Number(form.get("ttl_hours")),
     repository: form.get("repository") || null,
+    gpu: form.get("gpu_profile") ? { profile: form.get("gpu_profile") } : null,
   };
   submit.disabled = true;
   submit.setAttribute("aria-busy", "true");

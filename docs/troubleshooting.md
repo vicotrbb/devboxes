@@ -81,6 +81,40 @@ kubectl get secret devboxes-workspace -n devboxes \
 
 If the pod is Ready but the box still starts, inspect the Service next.
 
+## A GPU box remains starting
+
+Start with the user-visible allocation and scheduler message:
+
+```bash
+devbox status atlas
+devbox gpu profiles
+kubectl describe pod -n devboxes \
+  -l devboxes.bonalab.org/name=atlas
+```
+
+Then verify each layer in order:
+
+1. The profile's exact extended resource appears under `status.allocatable` on at least one node.
+2. At least one node matches every profile selector.
+3. The profile tolerates every blocking taint on that node.
+4. The configured RuntimeClass exists, or the vendor runtime is already the node default when the profile omits it.
+5. Enough resource units are free. Device-plugin sharing or partitioning semantics match the profile description.
+6. The profile workspace image pulls successfully and is compatible with the node driver.
+
+Useful cluster checks include:
+
+```bash
+kubectl get nodes -o custom-columns='NAME:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu'
+kubectl get runtimeclass
+kubectl get events -n devboxes --sort-by=.lastTimestamp
+kubectl get deployment devbox-atlas -n devboxes \
+  -o jsonpath='{.spec.template.spec.containers[0].resources}{"\n"}'
+```
+
+Replace `nvidia.com/gpu` with the profile's resource. `Insufficient RESOURCE` means Kubernetes has no free advertised units that also satisfy the pod constraints. `didn't match Pod's node affinity/selector` points to labels. Untolerated taint messages point to profile policy. A missing RuntimeClass is reported during pod admission.
+
+Do not patch the generated Deployment or add privileged mode and host device mounts. The controller owns that resource, and manual changes make the box non-reproducible. Correct the driver, capacity, or Helm profile, then delete and recreate a disposable test box. Existing boxes intentionally retain their creation-time profile snapshot.
+
 ## SSH address remains pending
 
 For `LoadBalancer`, inspect `.status.loadBalancer.ingress` and the load-balancer controller events:

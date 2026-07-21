@@ -4,6 +4,27 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-20
+
+### Added
+
+- Added opt-in, operator-approved GPU profiles across Helm, the API, CLI, dashboard, and in-product documentation, including default and explicitly named profile selection.
+- Added portable extended-resource requests for NVIDIA, AMD, Intel, partitioned, shared, device-plugin, and compatible Dynamic Resource Allocation bridge configurations, with optional per-profile workspace images, RuntimeClasses, supplemental groups, node selectors, and tolerations.
+- Added authenticated installation capability discovery, GPU allocation reporting, scheduler diagnostics, strict chart and controller validation, Helm contract tests, and end-to-end controller coverage.
+
+### Changed
+
+- Persist the fully resolved GPU profile on each workspace so stop, start, and Insights reconciliation cannot silently change or remove an existing hardware allocation after Helm configuration changes.
+- Show accelerator allocation in CLI list and status output and in the browser workbench while keeping CPU-only creation as the default.
+
+### Fixed
+
+- Made the Insights HTTP integration fixture use the current observation time so the full controller suite remains deterministic after its original fixture date.
+
+### Security
+
+- Restrict clients to named operator-owned profiles instead of accepting arbitrary images, resource names, RuntimeClasses, supplemental groups, selectors, tolerations, privileged mode, or host mounts.
+
 ## [0.3.0] - 2026-07-14
 
 ### Added
@@ -90,7 +111,8 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 - Portable Helm chart with values schema, namespace-scoped RBAC, configurable storage, ingress, LoadBalancer or NodePort SSH, ServiceMonitor, and disruption budget.
 - macOS and Linux CLI releases, SHA-256 verification installer, GHCR images, OCI chart publishing, image provenance attestations, and clean Kind install CI.
 
-[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/vicotrbb/devboxes/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/vicotrbb/devboxes/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/vicotrbb/devboxes/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vicotrbb/devboxes/compare/v0.1.2...v0.2.0

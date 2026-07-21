@@ -28,6 +28,7 @@ Recommended deployment controls:
 - use fine-grained, least-privilege provider tokens;
 - enable Kubernetes Secret encryption at rest and an auditable secret manager;
 - enforce the chart's namespace-scoped RBAC and tokenless workspace service account;
+- expose GPU devices only through reviewed operator-owned profiles and trusted derived images;
 - back up important PVCs and test restore procedures;
 - keep Kubernetes, ingress, CSI, images, chart, and CLI releases current;
 - verify release checksums and image provenance attestations.
@@ -38,6 +39,8 @@ authorization codes, and expiring scoped tokens. It has no skip-TLS-verification
 Workspace SSH disables password, keyboard-interactive, and root login and uses persistent
 Ed25519 host keys. Incoming terminal names are validated against installed terminfo before
 tmux starts.
+
+GPU profiles preserve this trust model. Clients can select only a configured name; they cannot inject an image, extended resource, RuntimeClass, supplemental group, selector, toleration, privileged mode, host path, or device path. The assigned device is fully available to the trusted workspace user, including through passwordless `sudo`, so GPU profiles do not make Devboxes suitable for untrusted workloads. Vendor drivers, device plugins, runtimes, and derived GPU images are part of the operator's trusted supply chain.
 
 ## Dependency and supply-chain policy
 

@@ -103,14 +103,36 @@ devbox create atlas --preset medium --ttl 24 --repo owner/project --ssh
 | `--preset small\|medium\|large` | Resource and storage preset, default `small` |
 | `--ttl HOURS` | Auto-stop interval from 1 to 168 hours, default 24 |
 | `--repo OWNER/REPOSITORY` | Clone a GitHub repository on first boot |
+| `--gpu` | Request the operator's default GPU profile |
+| `--gpu-profile PROFILE` | Request an exact operator-approved profile; implies `--gpu` |
 | `--no-wait` | Return after the API accepts the request |
 | `--ssh` | Wait for readiness, then connect |
 
 `--ssh` takes precedence over `--no-wait` because an SSH connection requires readiness.
 
+GPU creation remains opt-in:
+
+```bash
+devbox create inference --gpu --ssh
+devbox create training --gpu-profile nvidia-l4 --preset large --ssh
+```
+
+The controller rejects a GPU request when the feature is disabled or the profile is unknown. If Kubernetes cannot schedule the requested resource before the wait timeout, the error includes the latest scheduler reason. Use `--no-wait` for intentionally queued work and inspect it with `devbox status`.
+
+### `devbox gpu profiles`
+
+Discover the profiles available for new boxes:
+
+```bash
+devbox gpu profiles
+devbox gpu profiles --json
+```
+
+`devbox gpu` is a shorthand for the same catalog. Human output shows the profile identifier, display name, resource count, Kubernetes resource name, description, and default marker. JSON returns `enabled`, `default_profile`, and `profiles`. When the operator disables GPU support, the command reports that state instead of presenting stale profiles.
+
 ### `devbox list`
 
-List boxes sorted by creation time, newest first.
+List boxes sorted by creation time, newest first. Human output includes an `ACCELERATOR` column containing `cpu` or the resolved GPU profile.
 
 ```bash
 devbox list
@@ -119,7 +141,7 @@ devbox list --json
 
 ### `devbox status NAME`
 
-Show state, preset, storage, expiry, repository, SSH address, and any readiness message.
+Show state, preset, storage, accelerator allocation, expiry, repository, SSH address, and any readiness or scheduling message.
 
 ```bash
 devbox status atlas
@@ -214,7 +236,7 @@ JSON preserves nullable measurements and response metadata. CSV prefixes spreads
 
 ## Output and scripting
 
-Human-readable results go to stdout. Progress and connection-wait messages go to stderr. Failures return a nonzero exit status. `--json` emits formatted JSON for list, status, create, start, stop, and metrics workflows, which can be consumed with `jq`:
+Human-readable results go to stdout. Progress and connection-wait messages go to stderr. Failures return a nonzero exit status. `--json` emits formatted JSON for list, status, create, start, stop, GPU capability, and metrics workflows, which can be consumed with `jq`:
 
 ```bash
 devbox list --json | jq -r '.[] | select(.state == "ready") | .name'

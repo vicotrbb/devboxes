@@ -23,10 +23,52 @@ read_secret() {
   fi
 }
 
+configure_gpu_groups() {
+  local raw_groups="${DEVBOX_GPU_SUPPLEMENTAL_GROUPS:-}"
+  local group_id group_entry group_name
+  local -a group_ids=()
+  local -A seen_group_ids=()
+
+  [[ -n "$raw_groups" ]] || return 0
+  IFS=',' read -r -a group_ids <<< "$raw_groups"
+  if (( ${#group_ids[@]} > 8 )); then
+    log "DEVBOX_GPU_SUPPLEMENTAL_GROUPS contains more than eight group IDs"
+    return 1
+  fi
+
+  for group_id in "${group_ids[@]}"; do
+    if [[ ! "$group_id" =~ ^[1-9][0-9]{0,9}$ ]] \
+      || (( group_id > 2147483647 )); then
+      log "DEVBOX_GPU_SUPPLEMENTAL_GROUPS contains an invalid group ID"
+      return 1
+    fi
+    if [[ -n "${seen_group_ids[$group_id]+configured}" ]]; then
+      log "DEVBOX_GPU_SUPPLEMENTAL_GROUPS contains a duplicate group ID"
+      return 1
+    fi
+    seen_group_ids[$group_id]=1
+
+    group_entry="$(getent group "$group_id" || true)"
+    if [[ -n "$group_entry" ]]; then
+      group_name="${group_entry%%:*}"
+    else
+      group_name="devbox-device-$group_id"
+      if getent group "$group_name" >/dev/null; then
+        log "cannot create supplemental group $group_id because $group_name already exists"
+        return 1
+      fi
+      groupadd --gid "$group_id" "$group_name"
+    fi
+    usermod --append --groups "$group_name" dev
+  done
+}
+
 if [[ ! -s "$AUTHORIZED_KEYS" ]]; then
   log "SSH_AUTHORIZED_KEYS is missing or empty; refusing to start an inaccessible box"
   exit 1
 fi
+
+configure_gpu_groups
 
 printf '%s\n' "${DEVBOX_NAME:-devbox}" > /run/devbox-name
 chmod 0644 /run/devbox-name

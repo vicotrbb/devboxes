@@ -29,6 +29,7 @@ The shared token controls every devbox in the installation, including permanent 
 | `POST` | `/auth/cli/authorize` | 303 | Approve or deny a CSRF-protected CLI request |
 | `POST` | `/api/v1/auth/cli/token` | 200 | Exchange a one-time code and PKCE verifier |
 | `GET` | `/api/v1/whoami` | 200 | Verify authentication and identity |
+| `GET` | `/api/v1/capabilities` | 200 | Discover installation GPU profiles |
 | `GET` | `/api/v1/devboxes` | 200 | List managed devboxes |
 | `POST` | `/api/v1/devboxes` | 201 | Create a devbox |
 | `GET` | `/api/v1/devboxes/{name}` | 200 | Read one devbox |
@@ -50,6 +51,31 @@ loopback redirect ending in `/callback`, a high-entropy state, a PKCE challenge,
 browser subject for about two minutes. The token endpoint accepts JSON fields
 `grant_type`, `code`, `code_verifier`, `client_id`, and `redirect_uri`. Errors are generic,
 responses are `no-store`, codes are single-use, and no refresh token is returned.
+
+## Installation capabilities
+
+Authenticated clients use `GET /api/v1/capabilities` to discover optional installation features. GPU capability discovery returns only the safe user contract, not profile images, RuntimeClasses, supplemental groups, selectors, or tolerations:
+
+```json
+{
+  "gpu": {
+    "enabled": true,
+    "default_profile": "nvidia-l4",
+    "profiles": [
+      {
+        "name": "nvidia-l4",
+        "display_name": "NVIDIA L4",
+        "description": "One dedicated L4 for inference",
+        "resource_name": "nvidia.com/gpu",
+        "count": 1,
+        "default": true
+      }
+    ]
+  }
+}
+```
+
+When GPU support is disabled, `enabled` is false, `default_profile` is null, and `profiles` is empty. Clients should treat new top-level capabilities as additive.
 
 ## Create a devbox
 
@@ -75,8 +101,23 @@ Request fields:
 | `preset` | string | `small`, `medium`, or `large`, default `small` |
 | `ttl_hours` | integer | 1 to the configured maximum, default 24 |
 | `repository` | string or null | `owner/repository` or an HTTPS GitHub repository URL |
+| `gpu` | object or null | Optional GPU request; omit or use null for CPU-only |
+| `gpu.profile` | string or null | Configured profile name; null selects the operator default |
 
 Unknown fields are rejected. Creating an existing name returns `409 Conflict`. Recreating a deleted name reuses its retained PVC, and expands it when the new preset requests more storage.
+
+Request the operator's default GPU profile with an empty nested object:
+
+```json
+{
+  "name": "inference",
+  "preset": "medium",
+  "ttl_hours": 24,
+  "gpu": {}
+}
+```
+
+Select an exact profile with `"gpu": {"profile": "nvidia-l4"}`. The controller rejects GPU requests while the feature is disabled and rejects unknown profile names before creating any Kubernetes resource. Clients cannot send resource names, counts, images, RuntimeClasses, supplemental groups, selectors, or tolerations. Read [GPU acceleration](gpu.md) for the operator contract.
 
 ## Devbox response
 
@@ -95,7 +136,21 @@ Unknown fields are rejected. Creating an existing name returns `409 Conflict`. R
   "pod_ready": true,
   "restarts": 0,
   "storage_size": "30Gi",
-  "message": null
+  "message": null,
+  "gpu": null
+}
+```
+
+GPU boxes return their resolved allocation:
+
+```json
+{
+  "gpu": {
+    "profile": "nvidia-l4",
+    "display_name": "NVIDIA L4",
+    "resource_name": "nvidia.com/gpu",
+    "count": 1
+  }
 }
 ```
 
@@ -106,7 +161,7 @@ States are:
 - `stopped`, the Deployment has zero replicas and the home volume remains.
 - `degraded`, the pod failed or a known image or restart failure is visible.
 
-Timestamps are RFC 3339 values. `ssh_host`, `ssh_command`, `pod_name`, and `message` can be null while resources converge.
+Timestamps are RFC 3339 values. `ssh_host`, `ssh_command`, `pod_name`, and `message` can be null while resources converge. `gpu` is null for CPU-only boxes and remains stable across stop and start.
 
 ## Lifecycle semantics
 
@@ -160,7 +215,7 @@ Validation failures contain a list of structured errors. Common status codes are
 | 403 | Missing or invalid browser CSRF token |
 | 404 | Devbox does not exist |
 | 409 | Devbox name already exists |
-| 422 | Invalid path, request field, repository, preset, or TTL |
+| 422 | Invalid path, request field, repository, preset, TTL, disabled GPU feature, or unknown GPU profile |
 | 503 | Controller cannot reach the Kubernetes API through `/ready` |
 
 Clients should preserve the status code, treat error payload text as diagnostic rather than stable machine data, and retry only transient transport or readiness failures.

@@ -15,12 +15,13 @@ from kubernetes.client.exceptions import ApiException
 from kubernetes.utils.quantity import parse_quantity
 
 from .auth import Authenticator
-from .config import Settings
+from .config import GpuProfile, Settings
 from .models import (
     CreateDevboxRequest,
     DeleteResult,
     Devbox,
     DevboxState,
+    GpuAllocation,
     InsightsState,
     Preset,
 )
@@ -28,6 +29,10 @@ from .resources import (
     ANNOTATION_AUTO_STOPPED_AT,
     ANNOTATION_CREATED_AT,
     ANNOTATION_EXPIRES_AT,
+    ANNOTATION_GPU_CONFIG,
+    ANNOTATION_GPU_COUNT,
+    ANNOTATION_GPU_PROFILE,
+    ANNOTATION_GPU_RESOURCE,
     ANNOTATION_INSIGHTS_STATE,
     ANNOTATION_INSIGHTS_TEMPLATE_HASH,
     ANNOTATION_INSTANCE_ID,
@@ -97,6 +102,11 @@ class DevboxManager:
         """Create compute, SSH, and persistent storage for a devbox."""
         if request.ttl_hours > self.settings.max_ttl_hours:
             raise ValueError(f"ttl_hours cannot exceed {self.settings.max_ttl_hours}")
+        gpu_profile = (
+            self.settings.resolve_gpu_profile(request.gpu.profile)
+            if request.gpu is not None
+            else None
+        )
 
         name = resource_name(request.name)
         if await self._deployment_exists(name):
@@ -157,6 +167,7 @@ class DevboxManager:
             self.settings.workspace_service_account_name,
             self.settings.workspace_priority_class,
             self.settings.image_pull_secret,
+            gpu_profile=gpu_profile,
             instance_id=instance_id,
             insights_enabled=self.settings.insights_enabled,
             insights_endpoint=self.settings.insights_controller_url,
@@ -555,6 +566,7 @@ class DevboxManager:
             ),
             repository=annotations.get(ANNOTATION_REPOSITORY),
         )
+        gpu_profile = _resolved_gpu_profile(annotations, self.settings)
         credential = self.authenticator.issue_insights_token(instance_id, name)
         secret_name = await self._ensure_insights_secret(name, instance_id, credential)
         desired = build_deployment(
@@ -565,6 +577,7 @@ class DevboxManager:
             self.settings.workspace_service_account_name,
             self.settings.workspace_priority_class,
             self.settings.image_pull_secret,
+            gpu_profile=gpu_profile,
             instance_id=instance_id,
             insights_enabled=True,
             insights_endpoint=self.settings.insights_controller_url,
@@ -645,6 +658,7 @@ class DevboxManager:
             restarts=restarts,
             storage_size=annotations.get(ANNOTATION_STORAGE, "20Gi"),
             message=message,
+            gpu=_gpu_allocation(annotations),
             instance_id=annotations.get(ANNOTATION_INSTANCE_ID),
             insights_state=_insights_state(self.settings.insights_enabled, deployment, desired),
         )
@@ -731,6 +745,20 @@ def _state(
         )
         if phase == "Failed" or failure:
             return DevboxState.DEGRADED, failure or "Pod failed"
+        scheduling_condition = next(
+            (
+                condition
+                for condition in (getattr(pod.status, "conditions", None) or [])
+                if getattr(condition, "type", None) == "PodScheduled"
+                and getattr(condition, "status", None) == "False"
+            ),
+            None,
+        )
+        if scheduling_condition is not None:
+            detail = getattr(scheduling_condition, "message", None)
+            if detail:
+                return DevboxState.STARTING, f"Scheduling blocked: {str(detail)[:320]}"
+            return DevboxState.STARTING, "Waiting for a node with the requested resources"
     if pod_ready:
         return DevboxState.STARTING, "Waiting for an SSH service address"
     return DevboxState.STARTING, "Preparing workspace and SSH"
@@ -742,6 +770,58 @@ def _valid_instance_id(value: str) -> bool:
     except ValueError:
         return False
     return parsed.version == 4 and str(parsed) == value
+
+
+def _resolved_gpu_profile(
+    annotations: dict[str, str],
+    settings: Settings,
+) -> GpuProfile | None:
+    """Recover the pinned GPU profile snapshot used by an existing workspace."""
+    raw_profile = annotations.get(ANNOTATION_GPU_CONFIG)
+    if raw_profile:
+        try:
+            return GpuProfile.model_validate_json(raw_profile)
+        except ValueError as error:
+            raise ValueError("stored GPU profile configuration is invalid") from error
+    profile_name = annotations.get(ANNOTATION_GPU_PROFILE)
+    if profile_name:
+        for profile in settings.gpu_profiles:
+            if profile.name == profile_name:
+                return profile
+        raise ValueError(
+            f"stored GPU profile {profile_name!r} is unavailable and has no resolved snapshot"
+        )
+    return None
+
+
+def _gpu_allocation(annotations: dict[str, str]) -> GpuAllocation | None:
+    """Build a stable user-facing GPU allocation from Deployment annotations."""
+    profile_name = annotations.get(ANNOTATION_GPU_PROFILE)
+    if not profile_name:
+        return None
+    raw_profile = annotations.get(ANNOTATION_GPU_CONFIG)
+    if raw_profile:
+        try:
+            profile = GpuProfile.model_validate_json(raw_profile)
+        except ValueError:
+            profile = None
+        if profile is not None:
+            return GpuAllocation(
+                profile=profile.name,
+                display_name=profile.display_name,
+                resource_name=profile.resource_name,
+                count=profile.count,
+            )
+    try:
+        count = min(64, max(1, int(annotations.get(ANNOTATION_GPU_COUNT, "1"))))
+    except ValueError:
+        count = 1
+    return GpuAllocation(
+        profile=profile_name,
+        display_name=profile_name,
+        resource_name=annotations.get(ANNOTATION_GPU_RESOURCE, "unknown"),
+        count=count,
+    )
 
 
 def _has_insights_sidecar(deployment: Any) -> bool:

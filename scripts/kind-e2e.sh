@@ -327,6 +327,14 @@ else
     --set workspace.image.tag=e2e \
     --set insights.enabled=true \
     --set insights.agent.scanIntervalSeconds=15 \
+    --set gpu.enabled=true \
+    --set gpu.defaultProfile=test-gpu \
+    --set 'gpu.profiles[0].name=test-gpu' \
+    --set-string 'gpu.profiles[0].displayName=Test GPU' \
+    --set-string 'gpu.profiles[0].description=Unschedulable E2E accelerator' \
+    --set-string 'gpu.profiles[0].resourceName=example.com/gpu' \
+    --set 'gpu.profiles[0].count=1' \
+    --set 'gpu.profiles[0].supplementalGroups[0]=44' \
     --set workspace.sshService.type=NodePort \
     --set workspace.sshService.host=dev-node.example.test
 fi
@@ -347,6 +355,63 @@ test "$preserved_github_token" = preserved-runtime-test-value
 
 start_controller_port_forward
 api "http://127.0.0.1:$controller_port/api/v1/whoami" >/dev/null
+if [[ -z "$published_version" ]]; then
+  gpu_capabilities="$(api "http://127.0.0.1:$controller_port/api/v1/capabilities")"
+  jq -e '
+    .gpu.enabled == true
+    and .gpu.default_profile == "test-gpu"
+    and .gpu.profiles == [{
+      "name": "test-gpu",
+      "display_name": "Test GPU",
+      "description": "Unschedulable E2E accelerator",
+      "resource_name": "example.com/gpu",
+      "count": 1,
+      "default": true
+    }]
+  ' <<<"$gpu_capabilities" >/dev/null
+  if [[ -n "$released_cli" ]]; then
+    cli --json gpu profiles \
+      | jq -e '.enabled == true and .default_profile == "test-gpu"' >/dev/null
+    cli --json create gpu-smoke --gpu --no-wait \
+      | jq -e '.gpu.profile == "test-gpu" and .gpu.resource_name == "example.com/gpu"' \
+        >/dev/null
+  else
+    api \
+      -H 'Content-Type: application/json' \
+      -d '{"name":"gpu-smoke","gpu":{}}' \
+      "http://127.0.0.1:$controller_port/api/v1/devboxes" \
+      | jq -e '.gpu.profile == "test-gpu" and .gpu.resource_name == "example.com/gpu"' \
+        >/dev/null
+  fi
+  gpu_deployment="$(kubectl -n "$namespace" get deployment devbox-gpu-smoke -o json)"
+  jq -e '
+    .metadata.annotations["gpu.devboxes.bonalab.org/profile"] == "test-gpu"
+    and .spec.template.spec.securityContext.supplementalGroups == [44]
+    and .spec.template.spec.containers[0].resources.requests["example.com/gpu"] == "1"
+    and .spec.template.spec.containers[0].resources.limits["example.com/gpu"] == "1"
+    and ([
+      .spec.template.spec.containers[0].env[]
+      | select(.name == "DEVBOX_GPU_SUPPLEMENTAL_GROUPS")
+      | .value
+    ] == ["44"])
+    and ([.spec.template.spec.containers[1:][]?.resources.requests["example.com/gpu"]]
+      | all(. == null))
+  ' <<<"$gpu_deployment" >/dev/null
+  gpu_message=""
+  for _ in {1..30}; do
+    gpu_message="$(
+      api "http://127.0.0.1:$controller_port/api/v1/devboxes/gpu-smoke" \
+        | jq -r '.message // ""'
+    )"
+    [[ "$gpu_message" == *"example.com/gpu"* ]] && break
+    sleep 1
+  done
+  [[ "$gpu_message" == *"example.com/gpu"* ]]
+  api -X DELETE \
+    "http://127.0.0.1:$controller_port/api/v1/devboxes/gpu-smoke?purge=true" >/dev/null
+  kubectl -n "$namespace" wait --for=delete deployment/devbox-gpu-smoke --timeout=2m
+  kubectl -n "$namespace" wait --for=delete pvc/devbox-gpu-smoke-home --timeout=2m
+fi
 if [[ -n "$released_cli" ]]; then
   cli --json list | jq -e 'type == "array"' >/dev/null
 

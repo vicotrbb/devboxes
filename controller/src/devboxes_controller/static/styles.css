@@ -357,7 +357,7 @@ h3 {
 
 .create-form {
   display: grid;
-  grid-template-columns: minmax(9rem, 1fr) minmax(10rem, 0.9fr) minmax(9rem, 0.8fr) minmax(14rem, 1.5fr) auto;
+  grid-template-columns: minmax(9rem, 1fr) minmax(9rem, 0.8fr) minmax(9rem, 0.8fr) minmax(11rem, 1fr) minmax(14rem, 1.4fr) auto;
   align-items: end;
   gap: var(--space-3);
 }
@@ -994,6 +994,11 @@ select:focus {
   color: var(--ink);
 }
 
+.docs-article p code,
+.docs-article li code {
+  white-space: nowrap;
+}
+
 .command-block {
   margin: var(--space-5) 0;
   overflow: hidden;
@@ -1527,11 +1532,11 @@ kbd {
 
 @media (max-width: 70rem) {
   .create-form {
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .field-repository {
-    grid-column: span 2;
+    grid-column: span 3;
   }
 
   .docs-layout {
@@ -1610,6 +1615,11 @@ kbd {
     grid-column: span 2;
   }
 
+  .create-button {
+    width: 100%;
+    grid-column: span 2;
+  }
+
   .login-page {
     padding: 0;
   }
@@ -1680,6 +1690,7 @@ kbd {
 
   .create-button {
     width: 100%;
+    grid-column: auto;
   }
 
   .devbox-table,
@@ -1702,6 +1713,7 @@ kbd {
 
   .devbox-table td,
   .devbox-table tbody th,
+  .devbox-table th:first-child,
   .devbox-table td:first-child,
   .devbox-table td:last-child {
     width: 100%;
