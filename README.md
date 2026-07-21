@@ -87,7 +87,7 @@ kubectl -n devboxes create secret generic devboxes-workspace \
   --from-file=SSH_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub"
 
 helm install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
-  --version 0.3.0 \
+  --version 0.4.0 \
   --namespace devboxes
 ```
 
@@ -320,7 +320,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change. Security repo
 
 ## Project status
 
-Devboxes is at `v0.3`: useful and installable, with an intentionally narrow trust model. Compatibility follows semantic versioning after `v1.0`; before then, minor releases may include documented configuration or API changes. PVC data is never automatically deleted, including at TTL expiry.
+Devboxes is at `v0.4`: useful and installable, with an intentionally narrow trust model. Compatibility follows semantic versioning after `v1.0`; before then, minor releases may include documented configuration or API changes. PVC data is never automatically deleted, including at TTL expiry.
 
 ## License
 

@@ -4,6 +4,8 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-20
+
 ### Added
 
 - Added opt-in, operator-approved GPU profiles across Helm, the API, CLI, dashboard, and in-product documentation, including default and explicitly named profile selection.
@@ -109,7 +111,8 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 - Portable Helm chart with values schema, namespace-scoped RBAC, configurable storage, ingress, LoadBalancer or NodePort SSH, ServiceMonitor, and disruption budget.
 - macOS and Linux CLI releases, SHA-256 verification installer, GHCR images, OCI chart publishing, image provenance attestations, and clean Kind install CI.
 
-[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/vicotrbb/devboxes/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/vicotrbb/devboxes/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/vicotrbb/devboxes/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/vicotrbb/devboxes/compare/v0.1.2...v0.2.0
