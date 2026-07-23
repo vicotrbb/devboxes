@@ -6,7 +6,9 @@ import builtins
 import hmac
 import logging
 import uuid
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -65,6 +67,14 @@ class DevboxConflictError(Exception):
     """Signal that a requested devbox name is already active."""
 
 
+@dataclass
+class _LifecycleLock:
+    """Retain one keyed lifecycle lock while callers are using or awaiting it."""
+
+    lock: asyncio.Lock
+    references: int = 0
+
+
 class DevboxManager:
     """Translate lifecycle requests into namespaced Kubernetes resources."""
 
@@ -80,6 +90,33 @@ class DevboxManager:
         self.apps = apps_api or client.AppsV1Api()
         self.core = core_api or client.CoreV1Api()
         self.authenticator = Authenticator(settings)
+        self._lifecycle_locks: dict[str, _LifecycleLock] = {}
+        self._lifecycle_locks_guard = asyncio.Lock()
+
+    @asynccontextmanager
+    async def _lock_lifecycle(self, resource: str) -> AsyncIterator[None]:
+        """Serialize conflicting lifecycle and Insights work for one workspace.
+
+        The reference count keeps a lock alive while another task is waiting for it,
+        without retaining locks forever for deleted ephemeral workspaces.
+        """
+        async with self._lifecycle_locks_guard:
+            lifecycle_lock = self._lifecycle_locks.setdefault(
+                resource,
+                _LifecycleLock(lock=asyncio.Lock()),
+            )
+            lifecycle_lock.references += 1
+        try:
+            async with lifecycle_lock.lock:
+                yield
+        finally:
+            async with self._lifecycle_locks_guard:
+                lifecycle_lock.references -= 1
+                if (
+                    lifecycle_lock.references == 0
+                    and self._lifecycle_locks.get(resource) is lifecycle_lock
+                ):
+                    del self._lifecycle_locks[resource]
 
     @staticmethod
     def _load_config(settings: Settings) -> None:
@@ -126,6 +163,17 @@ class DevboxManager:
             )
 
         name = resource_name(request.name)
+        async with self._lock_lifecycle(name):
+            return await self._create_locked(request, gpu_profile, custom_image, name)
+
+    async def _create_locked(
+        self,
+        request: CreateDevboxRequest,
+        gpu_profile: GpuProfile | None,
+        custom_image: CustomImageProfile | None,
+        name: str,
+    ) -> Devbox:
+        """Create a devbox while holding its lifecycle lock."""
         if await self._deployment_exists(name):
             raise DevboxConflictError(f"devbox {request.name!r} already exists")
 
@@ -293,6 +341,11 @@ class DevboxManager:
     async def scale(self, name: str, replicas: int) -> Devbox:
         """Start or stop a devbox while preserving its home volume."""
         resource = resource_name(name)
+        async with self._lock_lifecycle(resource):
+            return await self._scale_locked(name, resource, replicas)
+
+    async def _scale_locked(self, name: str, resource: str, replicas: int) -> Devbox:
+        """Scale a devbox while holding its lifecycle lock."""
         try:
             if replicas == 1:
                 deployment = await asyncio.to_thread(
@@ -347,59 +400,76 @@ class DevboxManager:
             label_selector=selector,
         )
         changed: builtins.list[str] = []
-        for deployment in deployments.items:
-            name = deployment.metadata.labels.get(LABEL_NAME)
+        for listed_deployment in deployments.items:
+            name = listed_deployment.metadata.labels.get(LABEL_NAME)
             if not name:
                 continue
-            if (deployment.spec.replicas or 0) == 0:
-                prepared = await self._prepare_insights_template(deployment)
-                if prepared is not deployment:
-                    changed.append(name)
-            else:
-                annotations = deployment.metadata.annotations or {}
-                desired, instance_id = await self._desired_insights_deployment(deployment)
-                if not _insights_template_matches(deployment, desired) and (
-                    annotations.get(ANNOTATION_INSIGHTS_STATE)
-                    != InsightsState.RESTART_REQUIRED.value
-                    or annotations.get(ANNOTATION_INSTANCE_ID) != instance_id
-                ):
-                    await asyncio.to_thread(
-                        self.apps.patch_namespaced_deployment,
-                        deployment.metadata.name,
+            resource = resource_name(name)
+            async with self._lock_lifecycle(resource):
+                try:
+                    deployment = await asyncio.to_thread(
+                        self.apps.read_namespaced_deployment,
+                        resource,
                         self.settings.namespace,
-                        {
-                            "metadata": {
-                                "annotations": {
-                                    ANNOTATION_INSIGHTS_STATE: InsightsState.RESTART_REQUIRED.value,
-                                    ANNOTATION_INSTANCE_ID: instance_id,
-                                }
-                            }
-                        },
                     )
-                    changed.append(name)
+                except ApiException as error:
+                    if error.status == 404:
+                        continue
+                    raise
+                if _deletion_in_progress(deployment):
+                    continue
+                if (deployment.spec.replicas or 0) == 0:
+                    prepared = await self._prepare_insights_template(deployment)
+                    if prepared is not deployment:
+                        changed.append(name)
+                else:
+                    annotations = deployment.metadata.annotations or {}
+                    desired, instance_id = await self._desired_insights_deployment(deployment)
+                    if not _insights_template_matches(deployment, desired) and (
+                        annotations.get(ANNOTATION_INSIGHTS_STATE)
+                        != InsightsState.RESTART_REQUIRED.value
+                        or annotations.get(ANNOTATION_INSTANCE_ID) != instance_id
+                    ):
+                        await asyncio.to_thread(
+                            self.apps.patch_namespaced_deployment,
+                            deployment.metadata.name,
+                            self.settings.namespace,
+                            {
+                                "metadata": {
+                                    "annotations": {
+                                        ANNOTATION_INSIGHTS_STATE: (
+                                            InsightsState.RESTART_REQUIRED.value
+                                        ),
+                                        ANNOTATION_INSTANCE_ID: instance_id,
+                                    }
+                                }
+                            },
+                        )
+                        changed.append(name)
         return changed
 
     async def delete(self, name: str, purge: bool) -> DeleteResult:
         """Delete compute and SSH resources, optionally deleting storage."""
         resource = resource_name(name)
-        if not await self._deployment_exists(resource):
-            raise DevboxNotFoundError(name)
-        await asyncio.gather(
-            self._delete_deployment(resource),
-            self._delete_service(f"{resource}-ssh"),
-            self._delete_secret(f"{resource}-insights"),
-        )
-        if purge:
-            await self._delete_pvc(f"{resource}-home")
-        return DeleteResult(
-            name=name,
-            purged=purge,
-            message=(
-                "Devbox and home volume deleted"
-                if purge
-                else "Devbox deleted; home volume retained for reuse"
-            ),
-        )
+        async with self._lock_lifecycle(resource):
+            if not await self._deployment_exists(resource):
+                raise DevboxNotFoundError(name)
+            await asyncio.gather(
+                self._delete_deployment(resource),
+                self._delete_service(f"{resource}-ssh"),
+                self._delete_secret(f"{resource}-insights"),
+            )
+            if purge:
+                await self._delete_pvc(f"{resource}-home")
+            return DeleteResult(
+                name=name,
+                purged=purge,
+                message=(
+                    "Devbox and home volume deleted"
+                    if purge
+                    else "Devbox deleted; home volume retained for reuse"
+                ),
+            )
 
     async def stop_expired(self) -> builtins.list[str]:
         """Stop every active devbox whose TTL has expired."""
@@ -691,6 +761,12 @@ def _parse_datetime(value: str | None, fallback: datetime) -> datetime:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     return fallback if fallback.tzinfo else fallback.replace(tzinfo=UTC)
+
+
+def _deletion_in_progress(deployment: Any) -> bool:
+    """Return whether Kubernetes has begun deleting a Deployment."""
+    metadata = getattr(deployment, "metadata", None)
+    return getattr(metadata, "deletion_timestamp", None) is not None
 
 
 def _ttl_hours(value: str | None, default: int, maximum: int) -> int:
