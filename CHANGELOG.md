@@ -4,6 +4,8 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-23
+
 ### Added
 
 - Added opt-in custom image profiles across Helm, the API, CLI, dashboard, authenticated documentation, and public documentation. Profiles support isolated pod-local service sidecars and explicitly vetted Devboxes-compatible workspace derivatives.
@@ -12,6 +14,10 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 ### Changed
 
 - Persist the fully resolved custom image profile on each workspace so stop, start, TTL expiry, and Insights template reconciliation cannot silently change an existing image contract after Helm configuration changes.
+
+### Fixed
+
+- Serialize each workspace lifecycle with Insights reconciliation so a deleted workspace cannot have its scoped credential Secret recreated from a stale reconciliation snapshot.
 
 ### Security
 
@@ -124,7 +130,8 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 - Portable Helm chart with values schema, namespace-scoped RBAC, configurable storage, ingress, LoadBalancer or NodePort SSH, ServiceMonitor, and disruption budget.
 - macOS and Linux CLI releases, SHA-256 verification installer, GHCR images, OCI chart publishing, image provenance attestations, and clean Kind install CI.
 
-[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/vicotrbb/devboxes/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/vicotrbb/devboxes/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/vicotrbb/devboxes/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/vicotrbb/devboxes/compare/v0.2.0...v0.2.1

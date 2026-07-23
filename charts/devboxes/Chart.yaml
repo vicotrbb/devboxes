@@ -2,8 +2,8 @@ apiVersion: v2
 name: devboxes
 description: Self-hosted, ephemeral development environments on Kubernetes
 type: application
-version: 0.4.0
-appVersion: "0.4.0"
+version: 0.5.0
+appVersion: "0.5.0"
 kubeVersion: ">=1.29.0-0"
 home: https://github.com/vicotrbb/devboxes
 icon: https://raw.githubusercontent.com/vicotrbb/devboxes/main/docs/assets/devboxes-mark.svg
@@ -17,8 +17,10 @@ annotations:
   artifacthub.io/category: integration-delivery
   artifacthub.io/changes: |
     - kind: added
-      description: Add operator-approved GPU profiles across Helm, API, CLI, and dashboard workflows
+      description: Add operator-approved custom image profiles across Helm, API, CLI, and dashboard workflows
     - kind: added
-      description: Add accelerator discovery, allocation reporting, and scheduler diagnostics
+      description: Add approved image discovery, lifecycle pinning, and hardened service sidecars
+    - kind: fixed
+      description: Serialize Insights reconciliation with workspace lifecycle deletion
     - kind: security
-      description: Restrict users to named operator-owned hardware profiles and pinned workload contracts
+      description: Restrict users to named operator-owned image profiles and pinned workload contracts
