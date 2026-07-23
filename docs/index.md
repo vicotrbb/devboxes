@@ -14,6 +14,7 @@ Devboxes turns Kubernetes capacity into persistent, SSH-accessible development e
 - [CLI reference](cli.md), commands, global flags, environment variables, output, and SSH forwarding.
 - [API reference](api.md), authentication, endpoints, request and response contracts, and errors.
 - [GPU acceleration](gpu.md), profile design, cluster prerequisites, images, scheduling, security, and diagnosis.
+- [Custom image profiles](images.md), approved service sidecars, compatible workspace derivatives, security boundaries, and lifecycle behavior.
 - [Insights](insights.md), opt-in AI telemetry, aggregate Git activity, privacy boundaries, retention, backup, and purge.
 - The authenticated `/docs` page in a running controller, an operator-focused guide rendered with installation-specific values.
 
@@ -33,4 +34,4 @@ Devboxes turns Kubernetes capacity into persistent, SSH-accessible development e
 
 ## Supported scope
 
-Devboxes supports one trusted operator or trusted operator group per installation. The controller is namespaced, each workspace has persistent home storage, each SSH Service uses either `LoadBalancer` or `NodePort`, and GPU devices are optional operator-owned profiles. Multi-tenant authorization, untrusted workload isolation, browser terminals, cluster-wide GPU driver installation, and automatic PVC deletion are outside the current scope.
+Devboxes supports one trusted operator or trusted operator group per installation. The controller is namespaced, each workspace has persistent home storage, each SSH Service uses either `LoadBalancer` or `NodePort`, and GPU devices and custom images are optional operator-owned profiles. Multi-tenant authorization, arbitrary untrusted container execution, browser terminals, cluster-wide GPU driver installation, and automatic PVC deletion are outside the current scope.

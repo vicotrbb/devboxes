@@ -40,6 +40,8 @@ Use node selectors, affinity, tolerations, and an existing PriorityClass only wh
 
 For GPU capacity, count the extended-resource units requested by active profile allocations and interpret them according to the vendor plugin's dedicated, partitioned, or sharing mode. `count: 1` means one advertised unit, which is not always one physical board. Monitor allocatable resources and Pending events on every GPU pool. Keep CPU-only headroom because GPU workspaces still request the selected CPU and memory preset.
 
+For custom image profiles, add each sidecar's configured CPU and memory request to the selected workspace preset when forecasting node pressure. A catalog profile is trusted supply-chain policy, not an ad hoc developer image setting. Pin or regularly review image references, validate every supported architecture, verify registry credentials from each eligible node, and record the intended pod-local port and resource envelope.
+
 Profile selectors and tolerations are policy, not capacity detection. Before publishing a profile, prove that at least one node matches all selectors, tolerates the intended taints, advertises the exact resource, and can pull the profile image. Document whether each profile is dedicated or shared.
 
 ## Backups and restore
@@ -88,6 +90,8 @@ Then run `scripts/verify-install.sh`, confirm `/ready`, list existing boxes, cre
 
 When GPU configuration or images change, render the profile JSON before applying, run `devbox gpu profiles` after rollout, and create a disposable box for every changed profile. Verify the vendor diagnostic inside the box, stop and start it, and confirm the same profile contract remains. Stopping releases live device capacity, so Kubernetes may select a different physical device on start. Existing GPU Deployments retain their resolved snapshots; a Helm profile edit affects only later creations. Plan migrations as explicit delete and recreate operations, with a separate PVC retention decision.
 
+When custom image profiles change, render the catalog before applying, run `devbox image profiles`, and create a disposable test box for every changed profile. For a sidecar, verify a declared non-root image user, a port from 1024 through 65535, the container list, no unexpected Secret or PVC mount, application health over pod loopback, SSH tunneling, stop and start, and cleanup. For a workspace-mode profile, also verify SSH readiness, persistent-home reuse, repository bootstrap, and Insights behavior if enabled. Existing Deployments retain their creation-time resolved snapshot; changing or disabling a Helm profile rejects new requests but does not rewrite existing boxes. Retire a profile only after inventorying `devbox list --json` and making an explicit delete or migration plan.
+
 Enabling Insights does not force-restart an active legacy workspace. `devbox metrics status` reports `restart_required` until the box goes through a normal stop and start. Stopped workspaces are updated without starting compute. Confirm the expected state before and after the rollout.
 
 Prefer a reviewed values file over `--reuse-values`. It makes removed defaults and configuration drift visible.
@@ -104,6 +108,8 @@ helm rollback devboxes REVISION -n devboxes --wait
 A Helm rollback changes controller resources, not the contents of workspace PVCs. Do not roll back across an explicitly incompatible data or resource migration without following that release's instructions.
 
 Disabling GPU support or rolling back the catalog rejects new GPU requests but does not rewrite existing GPU Deployments. This is intentional. Inventory allocations with `devbox list --json` before retiring drivers, runtimes, images, or node pools that those boxes still require.
+
+Disabling custom image support or removing a profile similarly rejects new requests but does not remove a running sidecar or change an existing workspace image. Inventory image allocations before retiring a registry image or pull credential, then delete or migrate each affected box deliberately.
 
 ## Token rotation
 

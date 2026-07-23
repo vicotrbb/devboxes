@@ -42,6 +42,25 @@
       "required": ["image", "existingSecret", "serviceAccount", "sshService"],
       "properties": {
         "image": {"$ref": "#/definitions/imageWithoutPullPolicy"},
+        "customImages": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "profiles"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "profiles": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {"$ref": "#/definitions/customImageProfile"}
+            }
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"enabled": {"const": true}}},
+              "then": {"properties": {"profiles": {"minItems": 1}}}
+            }
+          ]
+        },
         "existingSecret": {"type": "string", "minLength": 1},
         "imagePullSecret": {"type": "string"},
         "storageClass": {"type": "string"},
@@ -272,6 +291,64 @@
       "properties": {
         "repository": {"type": "string", "minLength": 1},
         "tag": {"type": "string"}
+      }
+    },
+    "customImageProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "displayName", "image"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"
+        },
+        "displayName": {"type": "string", "minLength": 1, "maxLength": 80},
+        "description": {"type": "string", "maxLength": 160},
+        "image": {"type": "string", "minLength": 1, "maxLength": 512},
+        "mode": {"type": "string", "enum": ["sidecar", "workspace"]},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]},
+        "resources": {"$ref": "#/definitions/customImageResources"},
+        "ports": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {"$ref": "#/definitions/customImagePort"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"mode": {"const": "workspace"}},
+            "required": ["mode"]
+          },
+          "then": {"not": {"required": ["resources"]}}
+        }
+      ]
+    },
+    "customImageResources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpuRequest": {"type": "string", "minLength": 1, "maxLength": 32},
+        "memoryRequest": {"type": "string", "minLength": 1, "maxLength": 32},
+        "cpuLimit": {"type": "string", "minLength": 1, "maxLength": 32},
+        "memoryLimit": {"type": "string", "minLength": 1, "maxLength": 32}
+      }
+    },
+    "customImagePort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "containerPort"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"
+        },
+        "containerPort": {"type": "integer", "minimum": 1024, "maximum": 65535},
+        "protocol": {"type": "string", "enum": ["TCP", "UDP", "SCTP"]}
       }
     },
     "gpuToleration": {

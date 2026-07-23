@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from devboxes_controller.manager import DevboxConflictError, DevboxNotFoundError
 from devboxes_controller.models import (
     CreateDevboxRequest,
+    CustomImageAllocation,
+    CustomImagePortSummary,
     DeleteResult,
     Devbox,
     DevboxState,
@@ -90,6 +92,22 @@ class FakeManager:
                 display_name=display_name,
                 resource_name=resource_name,
                 count=1,
+            )
+        if request.image is not None:
+            profile = request.image
+            display_name, mode = {
+                "nginx": ("NGINX preview", "sidecar"),
+                "rust-nightly": ("Rust nightly", "workspace"),
+            }.get(profile, (profile, "sidecar"))
+            box.image = CustomImageAllocation(
+                profile=profile,
+                display_name=display_name,
+                mode=mode,
+                ports=(
+                    [CustomImagePortSummary(name="http", container_port=8080, protocol="TCP")]
+                    if profile == "nginx"
+                    else []
+                ),
             )
         box.ssh_host = None
         box.ssh_command = None

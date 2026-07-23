@@ -106,8 +106,10 @@ def test_service_ingests_gzip_and_builds_all_query_envelopes(tmp_path: Path) -> 
     assert asyncio.run(service.ready()) is True
 
     filters = service.filters(
-        since="7d",
-        until=None,
+        # Keep this envelope test tied to the fixed fixture timestamps instead
+        # of letting a rolling relative range silently age the points out.
+        since="2026-07-14T19:00:00Z",
+        until="2026-07-14T19:20:00Z",
         box=None,
         provider=None,
         model=None,

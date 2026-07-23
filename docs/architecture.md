@@ -29,7 +29,7 @@ The controller translates lifecycle operations into native Kubernetes resources 
 - One `PersistentVolumeClaim` per devbox, mounted at `/home/dev`.
 - When Insights is enabled, one scoped ingest `Secret` per devbox and one central Insights `PersistentVolumeClaim` for the controller.
 
-Resource names are deterministic (`devbox-NAME`), and labels plus annotations carry controller ownership, creation time, expiry, preset, repository, retained storage size, and any resolved GPU allocation.
+Resource names are deterministic (`devbox-NAME`), and labels plus annotations carry controller ownership, creation time, expiry, preset, repository, retained storage size, and any resolved GPU or custom image allocation.
 
 ## GPU resolution path
 
@@ -56,6 +56,32 @@ The create API accepts only an optional profile name. The controller resolves th
 
 The resolved profile is stored as a bounded Deployment annotation. Existing boxes therefore retain their allocation across stop, start, TTL expiry, and template reconciliation even if the Helm catalog later changes. Capability discovery publishes only profile names, labels, descriptions, resources, and counts. Scheduling details and images remain operator policy.
 
+## Custom image resolution path
+
+Custom images use the same operator-owned catalog pattern while preserving the Devboxes workspace contract:
+
+```text
+Helm custom image profiles
+       |
+       v
+validated controller settings
+       |
+       +---- authenticated capability catalog ----> CLI and dashboard
+       |
+user selects profile name or exact approved reference
+       |
+       v
+resolved pinned snapshot
+       |
+       +---- sidecar profile ----> credential-free custom-image container
+       |
+       +---- workspace profile --> verified Devboxes-compatible main container
+```
+
+The controller resolves a selector before it creates a PVC, Deployment, or SSH Service. A default `sidecar` profile runs a compatible non-root service image in the same pod network namespace as the prepared workspace. It has bounded configured resources and optional high pod-local ports, but no Devboxes Secret mount, home PVC mount, Kubernetes API token, public Service, extra capability, command override, or scheduling policy. `runAsNonRoot` is enforced, privilege escalation is disabled, and all capabilities are dropped. The SSH workspace remains the only interactive and credential-bearing container.
+
+A `workspace` profile deliberately replaces the main interactive image and is restricted to a compatible Devboxes-derived image. The controller prevents it from competing with a GPU profile that independently selects `workspaceImage`. The complete resolved profile is stored in a Deployment annotation, so stop, start, TTL expiry, and Insights template reconciliation retain the original image policy even if Helm values later change. Capability discovery exposes only profile labels, modes, descriptions, and declared ports.
+
 ## Persistence model
 
 Disconnecting SSH leaves the pod and tmux session running. Stopping scales the Deployment to zero, which ends processes but leaves the PVC. Deleting removes the Deployment and Service while retaining the PVC by default. Purging explicitly deletes the PVC.
@@ -79,6 +105,7 @@ The workspace entrypoint refuses to start without `SSH_AUTHORIZED_KEYS`. It prep
 - Controller RBAC is a Role scoped to the release namespace; it cannot manage cluster-wide resources.
 - Workspace service accounts have no RBAC binding and do not mount Kubernetes API tokens.
 - GPU clients can choose only a configured profile name. They cannot inject images, device resources, RuntimeClasses, supplemental groups, selectors, tolerations, privileged mode, host paths, or device paths.
+- Custom-image clients can choose only a configured profile name or exact configured image reference. They cannot inject a registry, command, Service, volume, port mapping, resource request, capability, host path, ServiceAccount, or scheduling field. Sidecar containers drop all Linux capabilities and cannot mount Devboxes credentials or persistent storage.
 - Workspace Secrets are mounted read-only with mode `0440`, scoped to the workspace group, and are not embedded in either image.
 - Each Insights ingest credential is HMAC-signed, write-only, scoped to one box and UUID instance, and stored in a dedicated namespaced Secret. It is never a controller, browser, or CLI credential.
 - The controller runs as a non-root user with a read-only root filesystem and all Linux capabilities dropped.

@@ -1048,15 +1048,15 @@ class InsightsStore:
             source.close()
 
     def _database_size_sync(self) -> int:
-        return sum(
-            candidate.stat().st_size
-            for candidate in (
-                self.path,
-                Path(f"{self.path}-wal"),
-                Path(f"{self.path}-shm"),
-            )
-            if candidate.exists()
-        )
+        total = 0
+        for candidate in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+            try:
+                total += candidate.stat().st_size
+            except FileNotFoundError:
+                # SQLite may remove or recreate WAL auxiliary files while a
+                # concurrent read asks for the aggregate database footprint.
+                continue
+        return total
 
 
 def _summarize_ai(rows: Iterable[sqlite3.Row]) -> dict[str, Any]:

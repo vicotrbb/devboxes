@@ -105,6 +105,7 @@ devbox create atlas --preset medium --ttl 24 --repo owner/project --ssh
 | `--repo OWNER/REPOSITORY` | Clone a GitHub repository on first boot |
 | `--gpu` | Request the operator's default GPU profile |
 | `--gpu-profile PROFILE` | Request an exact operator-approved profile; implies `--gpu` |
+| `--image PROFILE_OR_IMAGE` | Select an operator-approved custom image profile or its exact configured image reference |
 | `--no-wait` | Return after the API accepts the request |
 | `--ssh` | Wait for readiness, then connect |
 
@@ -119,6 +120,17 @@ devbox create training --gpu-profile nvidia-l4 --preset large --ssh
 
 The controller rejects a GPU request when the feature is disabled or the profile is unknown. If Kubernetes cannot schedule the requested resource before the wait timeout, the error includes the latest scheduler reason. Use `--no-wait` for intentionally queued work and inspect it with `devbox status`.
 
+Custom image selection is also opt-in. Discover profiles before creating a box, then use the stable profile name. The exact configured image reference is accepted for parity with existing container-oriented workflows, but arbitrary references are rejected before Kubernetes resources are created:
+
+```bash
+devbox image profiles
+devbox create docs-preview --image nginx --ssh
+devbox create docs-preview --image docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine --ssh
+devbox ssh docs-preview -- -L 8080:127.0.0.1:8080
+```
+
+Service profiles run as isolated, non-root, pod-local sidecars on high ports. Workspace profiles are only for compatible Devboxes workspace derivatives. See [custom image profiles](images.md) for the full contract and security boundary.
+
 ### `devbox gpu profiles`
 
 Discover the profiles available for new boxes:
@@ -130,9 +142,20 @@ devbox gpu profiles --json
 
 `devbox gpu` is a shorthand for the same catalog. Human output shows the profile identifier, display name, resource count, Kubernetes resource name, description, and default marker. JSON returns `enabled`, `default_profile`, and `profiles`. When the operator disables GPU support, the command reports that state instead of presenting stale profiles.
 
+### `devbox image profiles`
+
+Discover custom image profiles available for new boxes:
+
+```bash
+devbox image profiles
+devbox image profiles --json
+```
+
+Human output shows the profile identifier, display name, mode, declared pod-local ports, and description. It intentionally omits the underlying image reference, pull policy, resource envelope, and other operator policy. JSON returns `enabled` and `profiles`. When the operator disables custom images, the command reports that state rather than accepting stale profile names.
+
 ### `devbox list`
 
-List boxes sorted by creation time, newest first. Human output includes an `ACCELERATOR` column containing `cpu` or the resolved GPU profile.
+List boxes sorted by creation time, newest first. Human output includes an `ACCELERATOR` column containing `cpu` or the resolved GPU profile and an `IMAGE` column containing the resolved custom profile when present.
 
 ```bash
 devbox list
@@ -141,7 +164,7 @@ devbox list --json
 
 ### `devbox status NAME`
 
-Show state, preset, storage, accelerator allocation, expiry, repository, SSH address, and any readiness or scheduling message.
+Show state, preset, storage, accelerator and custom image allocations, expiry, repository, SSH address, and any readiness or scheduling message.
 
 ```bash
 devbox status atlas
@@ -236,7 +259,7 @@ JSON preserves nullable measurements and response metadata. CSV prefixes spreads
 
 ## Output and scripting
 
-Human-readable results go to stdout. Progress and connection-wait messages go to stderr. Failures return a nonzero exit status. `--json` emits formatted JSON for list, status, create, start, stop, GPU capability, and metrics workflows, which can be consumed with `jq`:
+Human-readable results go to stdout. Progress and connection-wait messages go to stderr. Failures return a nonzero exit status. `--json` emits formatted JSON for list, status, create, start, stop, GPU and custom-image capability, and metrics workflows, which can be consumed with `jq`:
 
 ```bash
 devbox list --json | jq -r '.[] | select(.state == "ready") | .name'

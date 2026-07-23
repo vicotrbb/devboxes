@@ -20,10 +20,11 @@ Each workspace includes Rust, Node.js, Python, `uv`, GitHub CLI, Codex CLI, Clau
 
 ## What ships
 
-- A Rust `devbox` CLI for create, list, inspect, SSH, start, stop, delete, and opt-in Insights workflows.
+- A Rust `devbox` CLI for create, list, inspect, SSH, start, stop, delete, custom-image profiles, and opt-in Insights workflows.
 - A FastAPI controller with an authenticated API, accessible browser workbench, Insights dashboard, documentation, metrics, health checks, and TTL cleanup.
 - A versioned Helm chart with values schema validation and namespace-scoped RBAC.
 - Optional operator-approved GPU profiles for NVIDIA, AMD, Intel, partitioned, or shared accelerators.
+- Optional operator-approved custom image profiles for pod-local services or vetted workspace derivatives.
 - Multi-architecture controller and workspace images for `linux/amd64` and `linux/arm64`.
 - Persistent SSH host identity, shell state, tool installs, account state, and source under `/home/dev`.
 - GitHub Releases with macOS and Linux CLI binaries and SHA-256 checksums.
@@ -169,6 +170,35 @@ devbox create training --gpu-profile nvidia-l4 --preset large --ssh
 
 The dashboard exposes the same profiles in its create form. Devboxes sets the resource in both container requests and limits, preserves the resolved allocation across stop and start, and surfaces scheduler reasons when capacity is unavailable. Read [GPU acceleration](docs/gpu.md) for driver prerequisites, NVIDIA and AMD examples, image contracts, sharing, security, upgrades, and troubleshooting.
 
+### Enable approved custom images
+
+Devboxes does not accept an unrestricted container image from a client. Instead, an operator publishes a reviewed catalog. Service profiles run an unprivileged image such as NGINX as a credential-free sidecar beside the prepared SSH workspace; workspace profiles are only for compatible Devboxes-derived images.
+
+```yaml
+workspace:
+  customImages:
+    enabled: true
+    profiles:
+      - name: nginx
+        displayName: NGINX preview
+        description: Serve a local static-site preview
+        image: docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine
+        mode: sidecar
+        ports:
+          - name: http
+            containerPort: 8080
+```
+
+Users discover and select the same catalog in the terminal or dashboard:
+
+```bash
+devbox image profiles
+devbox create docs-preview --image nginx --ssh
+devbox ssh docs-preview -- -L 8080:127.0.0.1:8080
+```
+
+Read [custom image profiles](docs/images.md) for the image contract, resource bounds, security boundary, upgrade behavior, and workspace-mode requirements.
+
 ### Enable Insights
 
 Insights is disabled by default. Enable it to collect privacy-bounded local AI metrics and aggregate Git activity into a persistent controller database:
@@ -313,6 +343,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change. Security repo
 - [Golden path](docs/golden-path.md) for a performance-oriented installation and daily workflow.
 - [CLI reference](docs/cli.md) and [API reference](docs/api.md) for client contracts.
 - [GPU acceleration](docs/gpu.md) for accelerator profiles, images, scheduling, and operations.
+- [Custom image profiles](docs/images.md) for approved sidecars, compatible workspace derivatives, and their security boundary.
 - [Insights](docs/insights.md) for telemetry semantics, privacy, storage, backup, and purge.
 - [Configuration](docs/configuration.md) and [credentials](docs/credentials.md) for installation details.
 - [Operations](docs/operations.md) and [troubleshooting](docs/troubleshooting.md) for production ownership.

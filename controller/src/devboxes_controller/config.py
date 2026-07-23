@@ -5,6 +5,7 @@ from functools import lru_cache
 from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
+from kubernetes.utils.quantity import parse_quantity
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,6 +14,14 @@ DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$")
 QUALIFIED_NAME_PART_RE = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$")
 LABEL_VALUE_RE = re.compile(r"^(?:[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?)?$")
 SupplementalGroup = Annotated[int, Field(strict=True, ge=1, le=2_147_483_647)]
+
+
+def _container_image_reference(value: str) -> str:
+    """Normalize a container image reference without accepting URL syntax."""
+    value = value.strip()
+    if not value or any(character.isspace() for character in value) or "://" in value:
+        raise ValueError("must be a whitespace-free container image reference without a URL scheme")
+    return value
 
 
 def _valid_dns_subdomain(value: str) -> bool:
@@ -145,13 +154,7 @@ class GpuProfile(BaseModel):
     @classmethod
     def workspace_image_is_valid(cls, value: str | None) -> str | None:
         """Reject image values Kubernetes cannot interpret as references."""
-        if value is not None and (
-            any(character.isspace() for character in value) or "://" in value
-        ):
-            raise ValueError(
-                "must be a whitespace-free container image reference without a URL scheme"
-            )
-        return value
+        return _container_image_reference(value) if value is not None else None
 
     @field_validator("runtime_class_name")
     @classmethod
@@ -186,6 +189,138 @@ class GpuProfile(BaseModel):
         return value
 
 
+class CustomImagePort(BaseModel):
+    """Describe one container port exposed only inside a devbox pod."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    name: str = Field(min_length=1, max_length=63)
+    container_port: int = Field(alias="containerPort", ge=1024, le=65_535)
+    protocol: Literal["TCP", "UDP", "SCTP"] = "TCP"
+
+    @field_validator("name")
+    @classmethod
+    def name_is_dns_safe(cls, value: str) -> str:
+        """Keep port names valid when Kubernetes renders the sidecar."""
+        value = value.strip().lower()
+        if not DNS_LABEL_RE.fullmatch(value):
+            raise ValueError("must be a valid lowercase Kubernetes DNS label")
+        return value
+
+
+class CustomImageResources(BaseModel):
+    """Define the bounded compute envelope for an approved service image."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    cpu_request: str = Field(default="25m", alias="cpuRequest", min_length=1, max_length=32)
+    memory_request: str = Field(default="32Mi", alias="memoryRequest", min_length=1, max_length=32)
+    cpu_limit: str = Field(default="500m", alias="cpuLimit", min_length=1, max_length=32)
+    memory_limit: str = Field(default="512Mi", alias="memoryLimit", min_length=1, max_length=32)
+
+    @field_validator("cpu_request", "memory_request", "cpu_limit", "memory_limit")
+    @classmethod
+    def quantity_is_positive(cls, value: str) -> str:
+        """Reject malformed or non-positive Kubernetes resource quantities."""
+        value = value.strip()
+        try:
+            if parse_quantity(value) <= 0:
+                raise ValueError
+        except ValueError as error:
+            raise ValueError("must be a positive Kubernetes resource quantity") from error
+        return value
+
+    @model_validator(mode="after")
+    def limits_cover_requests(self) -> Self:
+        """Avoid a catalog entry Kubernetes would reject at scheduling time."""
+        if parse_quantity(self.cpu_request) > parse_quantity(self.cpu_limit):
+            raise ValueError("cpuLimit must be greater than or equal to cpuRequest")
+        if parse_quantity(self.memory_request) > parse_quantity(self.memory_limit):
+            raise ValueError("memoryLimit must be greater than or equal to memoryRequest")
+        return self
+
+
+class CustomImageProfile(BaseModel):
+    """Define one operator-approved service or complete workspace image."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    name: str = Field(min_length=1, max_length=40)
+    display_name: str = Field(alias="displayName", min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=160)
+    image: str = Field(min_length=1, max_length=512)
+    mode: Literal["sidecar", "workspace"] = "sidecar"
+    pull_policy: Literal["Always", "IfNotPresent", "Never"] = Field(
+        default="IfNotPresent",
+        alias="pullPolicy",
+    )
+    resources: CustomImageResources | None = None
+    ports: list[CustomImagePort] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_sidecar_resource_defaults(cls, value: object) -> object:
+        """Persist sidecar defaults so a resolved snapshot cannot drift later."""
+        if not isinstance(value, dict):
+            return value
+        if value.get("mode", "sidecar") == "sidecar" and "resources" not in value:
+            return {**value, "resources": {}}
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def name_is_safe(cls, value: str) -> str:
+        """Require a compact profile identifier safe for every client surface."""
+        value = value.strip().lower()
+        if not GPU_PROFILE_NAME_RE.fullmatch(value):
+            raise ValueError(
+                "use 1-40 lowercase letters, digits, or hyphens; start and end alphanumeric"
+            )
+        return value
+
+    @field_validator("display_name")
+    @classmethod
+    def display_name_is_not_blank(cls, value: str) -> str:
+        """Normalize the user-visible image label."""
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def optional_text_is_normalized(cls, value: object) -> object:
+        """Trim optional descriptive text and treat blanks as absent."""
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @field_validator("image")
+    @classmethod
+    def image_is_valid(cls, value: str) -> str:
+        """Reject image values Kubernetes cannot interpret as references."""
+        return _container_image_reference(value)
+
+    @field_validator("ports")
+    @classmethod
+    def ports_are_unique(cls, value: list[CustomImagePort]) -> list[CustomImagePort]:
+        """Keep container-port declarations unambiguous for status and manifests."""
+        names = [port.name for port in value]
+        bindings = [(port.container_port, port.protocol) for port in value]
+        if len(names) != len(set(names)):
+            raise ValueError("must not contain duplicate port names")
+        if len(bindings) != len(set(bindings)):
+            raise ValueError("must not contain duplicate port and protocol bindings")
+        return value
+
+    @model_validator(mode="after")
+    def mode_has_only_applicable_settings(self) -> Self:
+        """Reject sidecar-only scheduling knobs on an interactive workspace image."""
+        if self.mode == "workspace" and self.resources is not None:
+            raise ValueError("workspace profiles cannot define sidecar resources")
+        return self
+
+
 class Settings(BaseSettings):
     """Define validated runtime settings for one Devboxes installation."""
 
@@ -196,6 +331,8 @@ class Settings(BaseSettings):
     display_name: str = "operator"
     cluster_name: str = "Kubernetes"
     workspace_image: str = "ghcr.io/vicotrbb/devboxes-workspace:latest"
+    custom_images_enabled: bool = False
+    custom_images: list[CustomImageProfile] = Field(default_factory=list, max_length=32)
     workspace_secret_name: str = "devboxes-workspace"  # noqa: S105 - Kubernetes Secret name
     workspace_service_account_name: str = "devboxes-workspace"
     workspace_priority_class: str | None = None
@@ -365,6 +502,14 @@ class Settings(BaseSettings):
                 raise ValueError("gpu_enabled requires at least one GPU profile")
             if self.gpu_default_profile is None:
                 raise ValueError("gpu_enabled requires gpu_default_profile")
+        custom_image_names = [profile.name for profile in self.custom_images]
+        if len(custom_image_names) != len(set(custom_image_names)):
+            raise ValueError("custom image profile names must be unique")
+        custom_image_references = [profile.image for profile in self.custom_images]
+        if len(custom_image_references) != len(set(custom_image_references)):
+            raise ValueError("custom image profile references must be unique")
+        if self.custom_images_enabled and not custom_image_names:
+            raise ValueError("custom_images_enabled requires at least one custom image profile")
         return self
 
     def resolve_gpu_profile(self, requested_name: str | None) -> GpuProfile:
@@ -377,6 +522,16 @@ class Settings(BaseSettings):
                 return profile
         available = ", ".join(profile.name for profile in self.gpu_profiles)
         raise ValueError(f"unknown GPU profile {profile_name!r}; available profiles: {available}")
+
+    def resolve_custom_image(self, selector: str) -> CustomImageProfile:
+        """Resolve a profile name or exact approved image reference before pod creation."""
+        if not self.custom_images_enabled:
+            raise ValueError("custom images are disabled by the operator")
+        for profile in self.custom_images:
+            if selector in {profile.name, profile.image}:
+                return profile
+        available = ", ".join(profile.name for profile in self.custom_images)
+        raise ValueError(f"unknown custom image {selector!r}; available profiles: {available}")
 
 
 @lru_cache

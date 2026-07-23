@@ -21,6 +21,8 @@ const elements = {
   purgeVolume: document.querySelector("#purge-volume"),
   confirmDelete: document.querySelector("#confirm-delete"),
   toastRegion: document.querySelector("#toast-region"),
+  image: document.querySelector("#image"),
+  imageHelp: document.querySelector("#image-help"),
 };
 
 function cookie(name) {
@@ -122,6 +124,18 @@ function renderBox(box) {
   if (box.gpu) {
     const unit = box.gpu.count === 1 ? "unit" : "units";
     details.push(`${box.gpu.display_name} · ${box.gpu.count} ${unit}`);
+  }
+  if (box.image) {
+    const mode =
+      box.image.mode === "sidecar" ? "service image" : "workspace image";
+    details.push(`${box.image.display_name} · ${mode}`);
+    if (box.image.ports.length) {
+      details.push(
+        box.image.ports
+          .map((port) => `${port.name}:${port.container_port}/${port.protocol}`)
+          .join(", "),
+      );
+    }
   }
   if (box.repository) {
     details.push(box.repository);
@@ -270,6 +284,7 @@ elements.createForm.addEventListener("submit", async (event) => {
     ttl_hours: Number(form.get("ttl_hours")),
     repository: form.get("repository") || null,
     gpu: form.get("gpu_profile") ? { profile: form.get("gpu_profile") } : null,
+    image: form.get("image") || null,
   };
   submit.disabled = true;
   submit.setAttribute("aria-busy", "true");
@@ -290,6 +305,35 @@ elements.createForm.addEventListener("submit", async (event) => {
     submit.removeAttribute("aria-busy");
   }
 });
+
+function updateImageHelp() {
+  if (!elements.image || !elements.imageHelp) {
+    return;
+  }
+  const selected = elements.image.selectedOptions[0];
+  if (!selected?.value) {
+    elements.imageHelp.textContent =
+      "Select an operator-approved image profile. Service images run as non-root sidecars on high ports without Secret mounts or Kubernetes credentials.";
+    return;
+  }
+  const mode = selected.dataset.mode;
+  const details = [selected.dataset.description].filter(Boolean);
+  if (mode === "workspace") {
+    details.push(
+      "This approved image replaces the prepared workspace and preserves its SSH lifecycle contract.",
+    );
+  } else {
+    details.push(
+      "This service image runs as a non-root sidecar on high ports without Secret mounts or Kubernetes credentials.",
+    );
+  }
+  if (selected.dataset.ports) {
+    details.push(`Pod-local ports: ${selected.dataset.ports}.`);
+  }
+  elements.imageHelp.textContent = details.join(" ");
+}
+
+elements.image?.addEventListener("change", updateImageHelp);
 
 elements.rows.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-action]");
@@ -366,5 +410,6 @@ document.addEventListener("click", (event) => {
   }
 });
 
+updateImageHelp();
 loadBoxes();
 window.setInterval(() => loadBoxes({ quiet: true }), 8_000);

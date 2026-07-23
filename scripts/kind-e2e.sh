@@ -5,6 +5,8 @@ cluster="${DEVBOXES_E2E_CLUSTER:-devboxes-e2e}"
 namespace="${DEVBOXES_NAMESPACE:-devboxes}"
 controller_port="${DEVBOXES_E2E_CONTROLLER_PORT:-18000}"
 ssh_port="${DEVBOXES_E2E_SSH_PORT:-12222}"
+custom_image_ssh_port="${DEVBOXES_E2E_CUSTOM_IMAGE_SSH_PORT:-12223}"
+custom_image_tunnel_port="${DEVBOXES_E2E_CUSTOM_IMAGE_TUNNEL_PORT:-18080}"
 node_image="${DEVBOXES_E2E_NODE_IMAGE:-kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f}"
 published_version="${DEVBOXES_E2E_PUBLISHED_VERSION:-}"
 released_cli="${DEVBOXES_E2E_CLI:-}"
@@ -14,6 +16,8 @@ token="e2e-access-token-at-least-32-characters"
 temporary_directory="$(mktemp -d)"
 controller_port_forward=""
 ssh_port_forward=""
+custom_image_ssh_port_forward=""
+custom_image_tunnel=""
 previous_context=""
 
 for command in kind kubectl helm docker curl jq ssh ssh-keygen nc python3; do
@@ -49,6 +53,8 @@ cleanup() {
     kubectl --context "kind-$cluster" logs -n "$namespace" deployment/devboxes --tail=200 >&2 || true
     kubectl --context "kind-$cluster" logs -n "$namespace" deployment/devbox-smoke \
       -c insights-agent --tail=200 >&2 || true
+    kubectl --context "kind-$cluster" logs -n "$namespace" deployment/devbox-image-smoke \
+      -c custom-image --tail=200 >&2 || true
     if [[ -f "$temporary_directory/controller-port-forward.log" ]]; then
       cat "$temporary_directory/controller-port-forward.log" >&2
     fi
@@ -67,6 +73,12 @@ cleanup() {
   fi
   if [[ -n "$ssh_port_forward" ]]; then
     kill "$ssh_port_forward" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$custom_image_tunnel" ]]; then
+    kill "$custom_image_tunnel" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$custom_image_ssh_port_forward" ]]; then
+    kill "$custom_image_ssh_port_forward" >/dev/null 2>&1 || true
   fi
   if [[ -n "$controller_port_forward" ]]; then
     kill "$controller_port_forward" >/dev/null 2>&1 || true
@@ -314,7 +326,11 @@ if [[ -n "$published_version" ]]; then
 else
   docker build --tag devboxes-controller:e2e controller
   docker build --tag devboxes-workspace:e2e workspace
-  kind load docker-image --name "$cluster" devboxes-controller:e2e devboxes-workspace:e2e
+  docker build --tag devboxes-test-nginx:e2e scripts/fixtures/custom-image
+  kind load docker-image --name "$cluster" \
+    devboxes-controller:e2e \
+    devboxes-workspace:e2e \
+    devboxes-test-nginx:e2e
 
   DEVBOXES_ACCESS_TOKEN="$token" \
   DEVBOXES_SSH_PUBLIC_KEY="$temporary_directory/id_ed25519.pub" \
@@ -335,6 +351,19 @@ else
     --set-string 'gpu.profiles[0].resourceName=example.com/gpu' \
     --set 'gpu.profiles[0].count=1' \
     --set 'gpu.profiles[0].supplementalGroups[0]=44' \
+    --set workspace.customImages.enabled=true \
+    --set 'workspace.customImages.profiles[0].name=test-nginx' \
+    --set-string 'workspace.customImages.profiles[0].displayName=Test NGINX' \
+    --set-string 'workspace.customImages.profiles[0].description=Kind service sidecar fixture' \
+    --set-string 'workspace.customImages.profiles[0].image=devboxes-test-nginx:e2e' \
+    --set 'workspace.customImages.profiles[0].mode=sidecar' \
+    --set 'workspace.customImages.profiles[0].pullPolicy=Never' \
+    --set-string 'workspace.customImages.profiles[0].resources.cpuRequest=25m' \
+    --set-string 'workspace.customImages.profiles[0].resources.memoryRequest=32Mi' \
+    --set-string 'workspace.customImages.profiles[0].resources.cpuLimit=100m' \
+    --set-string 'workspace.customImages.profiles[0].resources.memoryLimit=128Mi' \
+    --set 'workspace.customImages.profiles[0].ports[0].name=http' \
+    --set 'workspace.customImages.profiles[0].ports[0].containerPort=8080' \
     --set workspace.sshService.type=NodePort \
     --set workspace.sshService.host=dev-node.example.test
 fi
@@ -412,6 +441,125 @@ if [[ -z "$published_version" ]]; then
   kubectl -n "$namespace" wait --for=delete deployment/devbox-gpu-smoke --timeout=2m
   kubectl -n "$namespace" wait --for=delete pvc/devbox-gpu-smoke-home --timeout=2m
 fi
+
+if [[ -z "$published_version" ]]; then
+  image_capabilities="$(api "http://127.0.0.1:$controller_port/api/v1/capabilities")"
+  jq -e '
+    .images == {
+      "enabled": true,
+      "profiles": [{
+        "name": "test-nginx",
+        "display_name": "Test NGINX",
+        "description": "Kind service sidecar fixture",
+        "mode": "sidecar",
+        "ports": [{"name": "http", "container_port": 8080, "protocol": "TCP"}]
+      }]
+    }
+  ' <<<"$image_capabilities" >/dev/null
+  if [[ -n "$released_cli" ]]; then
+    cli --json image profiles \
+      | jq -e '.enabled == true and .profiles[0].name == "test-nginx"' >/dev/null
+    cli --json create image-smoke --image test-nginx --no-wait \
+      | jq -e '
+          .image.profile == "test-nginx"
+          and .image.mode == "sidecar"
+          and .image.ports == [{"name": "http", "container_port": 8080, "protocol": "TCP"}]
+        ' >/dev/null
+  else
+    api \
+      -H 'Content-Type: application/json' \
+      -d '{"name":"image-smoke","image":"test-nginx"}' \
+      "http://127.0.0.1:$controller_port/api/v1/devboxes" \
+      | jq -e '
+          .image.profile == "test-nginx"
+          and .image.mode == "sidecar"
+        ' >/dev/null
+  fi
+  kubectl -n "$namespace" rollout status deployment/devbox-image-smoke --timeout="$workspace_timeout"
+  image_deployment="$(kubectl -n "$namespace" get deployment devbox-image-smoke -o json)"
+  jq -e '
+    (.spec.template.spec.containers[] | select(.name == "custom-image")) as $sidecar
+    | .metadata.annotations["image.devboxes.bonalab.org/profile"] == "test-nginx"
+    and (.metadata.annotations["image.devboxes.bonalab.org/resolved-config"] | fromjson | .name == "test-nginx" and .mode == "sidecar")
+    and ([.spec.template.spec.containers[].name] == ["devbox", "custom-image", "insights-agent"])
+    and .spec.template.spec.automountServiceAccountToken == false
+    and $sidecar.image == "devboxes-test-nginx:e2e"
+    and $sidecar.imagePullPolicy == "Never"
+    and $sidecar.env == null
+    and $sidecar.volumeMounts == null
+    and $sidecar.securityContext.runAsNonRoot == true
+    and $sidecar.securityContext.allowPrivilegeEscalation == false
+    and $sidecar.securityContext.capabilities.drop == ["ALL"]
+    and $sidecar.resources.requests == {"cpu": "25m", "memory": "32Mi"}
+    and $sidecar.resources.limits == {"cpu": "100m", "memory": "128Mi"}
+    and $sidecar.ports == [{"name": "http", "containerPort": 8080, "protocol": "TCP"}]
+  ' <<<"$image_deployment" >/dev/null
+  kubectl -n "$namespace" exec deployment/devbox-image-smoke -c devbox -- \
+    curl -fsS http://127.0.0.1:8080/ \
+    | grep -Fx 'devboxes custom image e2e' >/dev/null
+
+  kubectl -n "$namespace" port-forward service/devbox-image-smoke-ssh \
+    "$custom_image_ssh_port:22" >"$temporary_directory/custom-image-ssh-port-forward.log" 2>&1 &
+  custom_image_ssh_port_forward=$!
+  for _ in {1..30}; do
+    nc -z 127.0.0.1 "$custom_image_ssh_port" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  nc -z 127.0.0.1 "$custom_image_ssh_port" >/dev/null 2>&1
+  ssh \
+    -i "$temporary_directory/id_ed25519" \
+    -p "$custom_image_ssh_port" \
+    -N \
+    -L "$custom_image_tunnel_port:127.0.0.1:8080" \
+    -o ExitOnForwardFailure=yes \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    dev@127.0.0.1 >"$temporary_directory/custom-image-tunnel.log" 2>&1 &
+  custom_image_tunnel=$!
+  for _ in {1..30}; do
+    if curl -fsS "http://127.0.0.1:$custom_image_tunnel_port/" \
+      >"$temporary_directory/custom-image-body.txt"; then
+      break
+    fi
+    kill -0 "$custom_image_tunnel" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  grep -Fx 'devboxes custom image e2e' "$temporary_directory/custom-image-body.txt" >/dev/null
+  kill "$custom_image_tunnel" >/dev/null 2>&1 || true
+  wait "$custom_image_tunnel" 2>/dev/null || true
+  custom_image_tunnel=""
+  kill "$custom_image_ssh_port_forward" >/dev/null 2>&1 || true
+  wait "$custom_image_ssh_port_forward" 2>/dev/null || true
+  custom_image_ssh_port_forward=""
+
+  if [[ -n "$released_cli" ]]; then
+    cli --json stop image-smoke >/dev/null
+    cli --json start image-smoke >/dev/null
+  else
+    api -X POST "http://127.0.0.1:$controller_port/api/v1/devboxes/image-smoke/stop" >/dev/null
+    api -X POST "http://127.0.0.1:$controller_port/api/v1/devboxes/image-smoke/start" >/dev/null
+  fi
+  kubectl -n "$namespace" rollout status deployment/devbox-image-smoke --timeout="$workspace_timeout"
+  image_after_restart="$(kubectl -n "$namespace" get deployment devbox-image-smoke -o json)"
+  jq -e '
+    .metadata.annotations["image.devboxes.bonalab.org/profile"] == "test-nginx"
+    and ([.spec.template.spec.containers[].name] == ["devbox", "custom-image", "insights-agent"])
+  ' <<<"$image_after_restart" >/dev/null
+  kubectl -n "$namespace" exec deployment/devbox-image-smoke -c devbox -- \
+    curl -fsS http://127.0.0.1:8080/ \
+    | grep -Fx 'devboxes custom image e2e' >/dev/null
+  if [[ -n "$released_cli" ]]; then
+    cli delete image-smoke --purge --yes >/dev/null
+  else
+    api -X DELETE \
+      "http://127.0.0.1:$controller_port/api/v1/devboxes/image-smoke?purge=true" >/dev/null
+  fi
+  kubectl -n "$namespace" wait --for=delete deployment/devbox-image-smoke --timeout=2m
+  kubectl -n "$namespace" wait --for=delete service/devbox-image-smoke-ssh --timeout=2m
+  kubectl -n "$namespace" wait --for=delete pvc/devbox-image-smoke-home --timeout=2m
+  kubectl -n "$namespace" wait --for=delete secret/devbox-image-smoke-insights --timeout=2m
+fi
+
 if [[ -n "$released_cli" ]]; then
   cli --json list | jq -e 'type == "array"' >/dev/null
 

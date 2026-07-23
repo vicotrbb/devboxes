@@ -39,3 +39,14 @@ def test_gpu_request_rejects_raw_kubernetes_configuration() -> None:
             name="atlas",
             gpu={"profile": "nvidia", "resource_name": "nvidia.com/gpu"},
         )
+
+
+def test_custom_image_selector_is_compact_and_does_not_accept_url_syntax() -> None:
+    request = CreateDevboxRequest(
+        name="nginx",
+        image=" docker.io/library/nginx:1.27.5-alpine ",
+    )
+
+    assert request.image == "docker.io/library/nginx:1.27.5-alpine"
+    with pytest.raises(ValidationError, match="image profile"):
+        CreateDevboxRequest(name="nginx", image="https://registry.example/nginx:latest")

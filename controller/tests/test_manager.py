@@ -6,12 +6,14 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from kubernetes.client.exceptions import ApiException
 
-from devboxes_controller.config import GpuProfile, Settings
+from devboxes_controller.config import CustomImagePort, CustomImageProfile, GpuProfile, Settings
 from devboxes_controller.manager import (
     DevboxConflictError,
     DevboxManager,
     DevboxNotFoundError,
+    _custom_image_allocation,
     _gpu_allocation,
+    _resolved_custom_image,
     _resolved_gpu_profile,
     _service_endpoint,
     _state,
@@ -20,6 +22,8 @@ from devboxes_controller.manager import (
 from devboxes_controller.models import CreateDevboxRequest, DevboxState, GpuRequest, Preset
 from devboxes_controller.resources import (
     ANNOTATION_CREATED_AT,
+    ANNOTATION_CUSTOM_IMAGE_CONFIG,
+    ANNOTATION_CUSTOM_IMAGE_PROFILE,
     ANNOTATION_EXPIRES_AT,
     ANNOTATION_GPU_CONFIG,
     ANNOTATION_GPU_PROFILE,
@@ -375,6 +379,93 @@ def test_create_rejects_gpu_requests_when_the_feature_is_disabled() -> None:
     core.create_namespaced_persistent_volume_claim.assert_not_called()
 
 
+def test_create_resolves_an_approved_custom_image_before_kubernetes_writes() -> None:
+    apps = Mock()
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    core = Mock()
+    core.read_namespaced_persistent_volume_claim.side_effect = ApiException(status=404)
+    profile = CustomImageProfile(
+        name="nginx",
+        displayName="NGINX preview",
+        image="docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine",
+        ports=[CustomImagePort(name="http", containerPort=8080)],
+    )
+    manager = DevboxManager(
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            custom_images_enabled=True,
+            custom_images=[profile],
+        ),
+        apps_api=apps,
+        core_api=core,
+    )
+    manager.get = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
+
+    asyncio.run(
+        manager.create(
+            CreateDevboxRequest(
+                name="nginx", image="docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine"
+            )
+        )
+    )
+
+    deployment = apps.create_namespaced_deployment.call_args.args[1]
+    assert deployment["metadata"]["annotations"][ANNOTATION_CUSTOM_IMAGE_PROFILE] == "nginx"
+    assert [
+        container["name"] for container in deployment["spec"]["template"]["spec"]["containers"]
+    ] == [
+        "devbox",
+        "custom-image",
+    ]
+
+
+def test_create_rejects_disabled_or_conflicting_custom_workspace_images() -> None:
+    apps = Mock()
+    core = Mock()
+    disabled = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=core,
+    )
+    with pytest.raises(ValueError, match="disabled by the operator"):
+        asyncio.run(disabled.create(CreateDevboxRequest(name="nginx", image="nginx")))
+
+    gpu = GpuProfile(
+        name="nvidia-l4",
+        displayName="NVIDIA L4",
+        resourceName="nvidia.com/gpu",
+        count=1,
+        workspaceImage="registry.example/devboxes-cuda:12.8",
+    )
+    workspace = CustomImageProfile(
+        name="rust-nightly",
+        displayName="Rust nightly",
+        image="registry.example/devboxes-rust:nightly",
+        mode="workspace",
+    )
+    conflicting = DevboxManager(
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            gpu_enabled=True,
+            gpu_default_profile="nvidia-l4",
+            gpu_profiles=[gpu],
+            custom_images_enabled=True,
+            custom_images=[workspace],
+        ),
+        apps_api=apps,
+        core_api=core,
+    )
+    with pytest.raises(ValueError, match="cannot be combined"):
+        asyncio.run(
+            conflicting.create(
+                CreateDevboxRequest(name="rust", gpu=GpuRequest(), image="rust-nightly")
+            )
+        )
+
+    apps.read_namespaced_deployment.assert_not_called()
+    core.create_namespaced_persistent_volume_claim.assert_not_called()
+
+
 def _legacy_deployment(replicas: int) -> SimpleNamespace:
     now = datetime.now(UTC)
     return SimpleNamespace(
@@ -419,6 +510,31 @@ def test_resolved_gpu_profile_snapshot_survives_later_operator_changes() -> None
         "display_name": "NVIDIA L4",
         "resource_name": "nvidia.com/gpu",
         "count": 1,
+    }
+
+
+def test_resolved_custom_image_snapshot_survives_later_operator_changes() -> None:
+    profile = CustomImageProfile(
+        name="nginx",
+        displayName="NGINX preview",
+        image="docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine",
+        ports=[CustomImagePort(name="http", containerPort=8080)],
+    )
+    annotations = {
+        ANNOTATION_CUSTOM_IMAGE_PROFILE: profile.name,
+        ANNOTATION_CUSTOM_IMAGE_CONFIG: profile.model_dump_json(
+            by_alias=True,
+            exclude_none=True,
+        ),
+    }
+    settings = Settings(access_token="test-access-token-at-least-32-characters")
+
+    assert _resolved_custom_image(annotations, settings) == profile
+    assert _custom_image_allocation(annotations).model_dump() == {
+        "profile": "nginx",
+        "display_name": "NGINX preview",
+        "mode": "sidecar",
+        "ports": [{"name": "http", "container_port": 8080, "protocol": "TCP"}],
     }
 
 

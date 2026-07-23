@@ -29,7 +29,7 @@ The shared token controls every devbox in the installation, including permanent 
 | `POST` | `/auth/cli/authorize` | 303 | Approve or deny a CSRF-protected CLI request |
 | `POST` | `/api/v1/auth/cli/token` | 200 | Exchange a one-time code and PKCE verifier |
 | `GET` | `/api/v1/whoami` | 200 | Verify authentication and identity |
-| `GET` | `/api/v1/capabilities` | 200 | Discover installation GPU profiles |
+| `GET` | `/api/v1/capabilities` | 200 | Discover installation GPU and custom image profiles |
 | `GET` | `/api/v1/devboxes` | 200 | List managed devboxes |
 | `POST` | `/api/v1/devboxes` | 201 | Create a devbox |
 | `GET` | `/api/v1/devboxes/{name}` | 200 | Read one devbox |
@@ -54,7 +54,7 @@ responses are `no-store`, codes are single-use, and no refresh token is returned
 
 ## Installation capabilities
 
-Authenticated clients use `GET /api/v1/capabilities` to discover optional installation features. GPU capability discovery returns only the safe user contract, not profile images, RuntimeClasses, supplemental groups, selectors, or tolerations:
+Authenticated clients use `GET /api/v1/capabilities` to discover optional installation features. Capability discovery returns only the safe user contract, not profile images, pull policies, resource limits, RuntimeClasses, supplemental groups, selectors, or tolerations:
 
 ```json
 {
@@ -71,11 +71,25 @@ Authenticated clients use `GET /api/v1/capabilities` to discover optional instal
         "default": true
       }
     ]
+  },
+  "images": {
+    "enabled": true,
+    "profiles": [
+      {
+        "name": "nginx",
+        "display_name": "NGINX preview",
+        "description": "Serve a local static-site preview",
+        "mode": "sidecar",
+        "ports": [
+          {"name": "http", "container_port": 8080, "protocol": "TCP"}
+        ]
+      }
+    ]
   }
 }
 ```
 
-When GPU support is disabled, `enabled` is false, `default_profile` is null, and `profiles` is empty. Clients should treat new top-level capabilities as additive.
+When GPU support is disabled, `gpu.enabled` is false, `default_profile` is null, and its `profiles` is empty. When custom images are disabled, `images.enabled` is false and its `profiles` is empty. Clients should treat new top-level capabilities as additive.
 
 ## Create a devbox
 
@@ -103,6 +117,7 @@ Request fields:
 | `repository` | string or null | `owner/repository` or an HTTPS GitHub repository URL |
 | `gpu` | object or null | Optional GPU request; omit or use null for CPU-only |
 | `gpu.profile` | string or null | Configured profile name; null selects the operator default |
+| `image` | string or null | Operator-approved image profile name or its exact configured image reference |
 
 Unknown fields are rejected. Creating an existing name returns `409 Conflict`. Recreating a deleted name reuses its retained PVC, and expands it when the new preset requests more storage.
 
@@ -118,6 +133,8 @@ Request the operator's default GPU profile with an empty nested object:
 ```
 
 Select an exact profile with `"gpu": {"profile": "nvidia-l4"}`. The controller rejects GPU requests while the feature is disabled and rejects unknown profile names before creating any Kubernetes resource. Clients cannot send resource names, counts, images, RuntimeClasses, supplemental groups, selectors, or tolerations. Read [GPU acceleration](gpu.md) for the operator contract.
+
+Select a custom image with `"image": "nginx"`. The controller resolves the selector against the enabled catalog before it creates the PVC, Deployment, or SSH Service. A selector may be the stable profile name or an exact configured image reference; a raw unapproved reference is rejected. Clients cannot send a command, volume, Service, resource envelope, port mapping, capability, or scheduling policy. Read [custom image profiles](images.md) for sidecar and workspace requirements.
 
 ## Devbox response
 
@@ -137,7 +154,8 @@ Select an exact profile with `"gpu": {"profile": "nvidia-l4"}`. The controller r
   "restarts": 0,
   "storage_size": "30Gi",
   "message": null,
-  "gpu": null
+  "gpu": null,
+  "image": null
 }
 ```
 
@@ -154,6 +172,21 @@ GPU boxes return their resolved allocation:
 }
 ```
 
+Custom image boxes return their resolved user-facing allocation:
+
+```json
+{
+  "image": {
+    "profile": "nginx",
+    "display_name": "NGINX preview",
+    "mode": "sidecar",
+    "ports": [
+      {"name": "http", "container_port": 8080, "protocol": "TCP"}
+    ]
+  }
+}
+```
+
 States are:
 
 - `starting`, the pod or SSH address is not ready.
@@ -161,7 +194,7 @@ States are:
 - `stopped`, the Deployment has zero replicas and the home volume remains.
 - `degraded`, the pod failed or a known image or restart failure is visible.
 
-Timestamps are RFC 3339 values. `ssh_host`, `ssh_command`, `pod_name`, and `message` can be null while resources converge. `gpu` is null for CPU-only boxes and remains stable across stop and start.
+Timestamps are RFC 3339 values. `ssh_host`, `ssh_command`, `pod_name`, and `message` can be null while resources converge. `gpu` is null for CPU-only boxes and `image` is null when no custom profile was selected. Both resolved allocations remain stable across stop and start.
 
 ## Lifecycle semantics
 
@@ -215,7 +248,7 @@ Validation failures contain a list of structured errors. Common status codes are
 | 403 | Missing or invalid browser CSRF token |
 | 404 | Devbox does not exist |
 | 409 | Devbox name already exists |
-| 422 | Invalid path, request field, repository, preset, TTL, disabled GPU feature, or unknown GPU profile |
+| 422 | Invalid path, request field, repository, preset, TTL, disabled feature, or unknown GPU or image profile |
 | 503 | Controller cannot reach the Kubernetes API through `/ready` |
 
 Clients should preserve the status code, treat error payload text as diagnostic rather than stable machine data, and retry only transient transport or readiness failures.

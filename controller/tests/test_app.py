@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from devboxes_controller.app import create_app
 from devboxes_controller.auth import pkce_s256
-from devboxes_controller.config import GpuProfile, Settings
+from devboxes_controller.config import CustomImagePort, CustomImageProfile, GpuProfile, Settings
 
 from .fakes import FakeManager
 
@@ -243,7 +243,8 @@ def test_gpu_capabilities_expose_only_safe_profile_metadata() -> None:
                     "default": True,
                 }
             ],
-        }
+        },
+        "images": {"enabled": False, "profiles": []},
     }
     assert "workspaceImage" not in response.text
     assert "runtimeClassName" not in response.text
@@ -260,6 +261,63 @@ def test_gpu_capabilities_expose_only_safe_profile_metadata() -> None:
     assert "GPU profiles" in dashboard.text
     assert "Use an operator-approved GPU" in documentation.text
     assert "devbox create inference --gpu --ssh" in documentation.text
+
+
+def test_custom_image_capabilities_expose_only_safe_profile_metadata() -> None:
+    settings = Settings(
+        access_token="test-access-token-at-least-32-characters",
+        cookie_secure=False,
+        cleanup_interval_seconds=3600,
+        custom_images_enabled=True,
+        custom_images=[
+            CustomImageProfile(
+                name="nginx",
+                displayName="NGINX preview",
+                description="Serve a local static-site preview",
+                image="private.example/nginx:1.27.5",
+                pullPolicy="Always",
+                ports=[CustomImagePort(name="http", containerPort=8080)],
+            )
+        ],
+    )
+    headers = {"Authorization": "Bearer test-access-token-at-least-32-characters"}
+
+    with app_client(settings) as client:
+        response = client.get("/api/v1/capabilities", headers=headers)
+        created = client.post(
+            "/api/v1/devboxes",
+            headers=headers,
+            json={"name": "preview", "image": "nginx"},
+        )
+        browser_login(client)
+        dashboard = client.get("/")
+        documentation = client.get("/docs")
+
+    assert response.status_code == 200
+    assert response.json()["images"] == {
+        "enabled": True,
+        "profiles": [
+            {
+                "name": "nginx",
+                "display_name": "NGINX preview",
+                "description": "Serve a local static-site preview",
+                "mode": "sidecar",
+                "ports": [{"name": "http", "container_port": 8080, "protocol": "TCP"}],
+            }
+        ],
+    }
+    assert "private.example/nginx:1.27.5" not in response.text
+    assert "pullPolicy" not in response.text
+    assert created.status_code == 201
+    assert created.json()["image"] == {
+        "profile": "nginx",
+        "display_name": "NGINX preview",
+        "mode": "sidecar",
+        "ports": [{"name": "http", "container_port": 8080, "protocol": "TCP"}],
+    }
+    assert 'value="nginx"' in dashboard.text
+    assert "approved images" in dashboard.text
+    assert "Use an operator-approved image" in documentation.text
 
 
 def test_api_rejects_invalid_path_names_before_kubernetes() -> None:

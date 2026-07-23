@@ -1,5 +1,5 @@
 from devboxes_controller.app import create_app
-from devboxes_controller.config import GpuProfile, Settings
+from devboxes_controller.config import CustomImagePort, CustomImageProfile, GpuProfile, Settings
 
 from .fakes import FakeManager
 
@@ -24,6 +24,17 @@ settings = Settings(
             resourceName="nvidia.com/gpu.shared",
             count=1,
         ),
+    ],
+    custom_images_enabled=True,
+    custom_images=[
+        CustomImageProfile(
+            name="nginx",
+            displayName="NGINX preview",
+            description="Serve a local static-site preview over the pod network",
+            image="docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine",
+            mode="sidecar",
+            ports=[CustomImagePort(name="http", containerPort=8080)],
+        )
     ],
 )
 app = create_app(settings, FakeManager())  # type: ignore[arg-type]

@@ -5,7 +5,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .config import GpuProfile
+from .config import CustomImageProfile, GpuProfile
 from .models import CreateDevboxRequest, Preset
 
 MANAGED_BY = "devboxes-controller"
@@ -25,6 +25,8 @@ ANNOTATION_GPU_PROFILE = "gpu.devboxes.bonalab.org/profile"
 ANNOTATION_GPU_RESOURCE = "gpu.devboxes.bonalab.org/resource"
 ANNOTATION_GPU_COUNT = "gpu.devboxes.bonalab.org/count"
 ANNOTATION_GPU_CONFIG = "gpu.devboxes.bonalab.org/resolved-config"
+ANNOTATION_CUSTOM_IMAGE_PROFILE = "image.devboxes.bonalab.org/profile"
+ANNOTATION_CUSTOM_IMAGE_CONFIG = "image.devboxes.bonalab.org/resolved-config"
 
 
 PRESETS: dict[Preset, dict[str, str]] = {
@@ -70,6 +72,7 @@ def annotations(
     now: datetime | None = None,
     instance_id: str | None = None,
     gpu_profile: GpuProfile | None = None,
+    custom_image: CustomImageProfile | None = None,
 ) -> dict[str, str]:
     """Return lifecycle and user-input annotations for a new devbox."""
     now = now or datetime.now(UTC)
@@ -92,6 +95,17 @@ def annotations(
                 ANNOTATION_GPU_COUNT: str(gpu_profile.count),
                 ANNOTATION_GPU_CONFIG: json.dumps(
                     gpu_profile.model_dump(mode="json", by_alias=True, exclude_none=True),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            }
+        )
+    if custom_image is not None:
+        result.update(
+            {
+                ANNOTATION_CUSTOM_IMAGE_PROFILE: custom_image.name,
+                ANNOTATION_CUSTOM_IMAGE_CONFIG: json.dumps(
+                    custom_image.model_dump(mode="json", by_alias=True, exclude_none=True),
                     sort_keys=True,
                     separators=(",", ":"),
                 ),
@@ -137,6 +151,7 @@ def build_deployment(
     workspace_priority_class: str | None = None,
     image_pull_secret: str | None = None,
     gpu_profile: GpuProfile | None = None,
+    custom_image: CustomImageProfile | None = None,
     now: datetime | None = None,
     instance_id: str | None = None,
     insights_enabled: bool = False,
@@ -151,11 +166,13 @@ def build_deployment(
     """Build the disposable workspace Deployment for a devbox."""
     name = resource_name(request.name)
     box_labels = labels(request.name)
-    effective_workspace_image = (
-        gpu_profile.workspace_image
-        if gpu_profile is not None and gpu_profile.workspace_image is not None
-        else workspace_image
-    )
+    effective_workspace_image = workspace_image
+    effective_workspace_pull_policy = "IfNotPresent"
+    if gpu_profile is not None and gpu_profile.workspace_image is not None:
+        effective_workspace_image = gpu_profile.workspace_image
+    if custom_image is not None and custom_image.mode == "workspace":
+        effective_workspace_image = custom_image.image
+        effective_workspace_pull_policy = custom_image.pull_policy
     env = [
         {"name": "DEVBOX_NAME", "value": request.name},
         {"name": "DEVBOX_PRESET", "value": request.preset.value},
@@ -221,7 +238,7 @@ def build_deployment(
             {
                 "name": "devbox",
                 "image": effective_workspace_image,
-                "imagePullPolicy": "IfNotPresent",
+                "imagePullPolicy": effective_workspace_pull_policy,
                 "ports": [{"name": "ssh", "containerPort": 2222, "protocol": "TCP"}],
                 "env": env,
                 "resources": {
@@ -313,6 +330,36 @@ def build_deployment(
                 for toleration in gpu_profile.tolerations
             ]
 
+    if custom_image is not None and custom_image.mode == "sidecar":
+        if custom_image.resources is None:
+            raise ValueError("sidecar custom image profile is missing its resource envelope")
+        sidecar_resources = custom_image.resources
+        sidecar: dict[str, Any] = {
+            "name": "custom-image",
+            "image": custom_image.image,
+            "imagePullPolicy": custom_image.pull_policy,
+            "resources": {
+                "requests": {
+                    "cpu": sidecar_resources.cpu_request,
+                    "memory": sidecar_resources.memory_request,
+                },
+                "limits": {
+                    "cpu": sidecar_resources.cpu_limit,
+                    "memory": sidecar_resources.memory_limit,
+                },
+            },
+            "securityContext": {
+                "runAsNonRoot": True,
+                "allowPrivilegeEscalation": False,
+                "capabilities": {"drop": ["ALL"]},
+            },
+        }
+        if custom_image.ports:
+            sidecar["ports"] = [
+                port.model_dump(mode="json", by_alias=True) for port in custom_image.ports
+            ]
+        pod_spec["containers"].append(sidecar)
+
     if insights_enabled:
         if not all((instance_id, insights_endpoint, insights_credential)):
             raise ValueError(
@@ -374,7 +421,13 @@ def build_deployment(
             }
         )
 
-    deployment_annotations = annotations(request, now, instance_id, gpu_profile)
+    deployment_annotations = annotations(
+        request,
+        now,
+        instance_id,
+        gpu_profile,
+        custom_image,
+    )
     deployment_annotations[ANNOTATION_INSIGHTS_STATE] = (
         "collecting" if insights_enabled else "disabled"
     )
@@ -387,6 +440,8 @@ def build_deployment(
                 ANNOTATION_GPU_COUNT: str(gpu_profile.count),
             }
         )
+    if custom_image is not None:
+        template_annotations[ANNOTATION_CUSTOM_IMAGE_PROFILE] = custom_image.name
     manifest: dict[str, Any] = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",

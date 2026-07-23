@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -83,6 +84,30 @@ def test_store_migrates_readies_and_creates_an_online_backup(tmp_path: Path) -> 
     assert backup.exists()
     with closing(sqlite3.connect(backup)) as copy:
         assert copy.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 1
+
+
+def test_database_size_tolerates_a_disappearing_sqlite_auxiliary_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = InsightsStore(tmp_path / "insights.db")
+    wal_path = Path(f"{store.path}-wal")
+    shm_path = Path(f"{store.path}-shm")
+    sizes: dict[Path, int | FileNotFoundError] = {
+        store.path: 100,
+        wal_path: FileNotFoundError(),
+        shm_path: 20,
+    }
+
+    def stat(path: Path, *args: object, **kwargs: object) -> SimpleNamespace:
+        result = sizes[path]
+        if isinstance(result, FileNotFoundError):
+            raise result
+        return SimpleNamespace(st_size=result)
+
+    monkeypatch.setattr(Path, "stat", stat)
+
+    assert store._database_size_sync() == 120
 
 
 def test_store_migrates_a_previous_empty_schema_transactionally(tmp_path: Path) -> None:
