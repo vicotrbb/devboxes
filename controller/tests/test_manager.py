@@ -578,6 +578,7 @@ def test_active_legacy_workspace_is_marked_restart_required_without_template_pat
     deployment = _legacy_deployment(1)
     apps = Mock()
     apps.list_namespaced_deployment.return_value = SimpleNamespace(items=[deployment])
+    apps.read_namespaced_deployment.return_value = deployment
     core = Mock()
     core.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
         metadata=SimpleNamespace(annotations={})
@@ -600,11 +601,67 @@ def test_active_legacy_workspace_is_marked_restart_required_without_template_pat
     core.patch_namespaced_persistent_volume_claim.assert_called_once()
 
 
+def test_insights_reconciliation_skips_a_stale_deployment_after_delete() -> None:
+    deployment = _legacy_deployment(1)
+    apps = Mock()
+    apps.list_namespaced_deployment.return_value = SimpleNamespace(items=[deployment])
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    core = Mock()
+    manager = DevboxManager(
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            insights_enabled=True,
+        ),
+        apps_api=apps,
+        core_api=core,
+    )
+
+    assert asyncio.run(manager.reconcile_insights()) == []
+
+    core.create_namespaced_secret.assert_not_called()
+    apps.patch_namespaced_deployment.assert_not_called()
+
+
+def test_lifecycle_lock_serializes_waiters_and_releases_deleted_workspace_entries() -> None:
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=Mock(),
+        core_api=Mock(),
+    )
+
+    async def exercise_lock() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        second_acquired = False
+
+        async def first() -> None:
+            async with manager._lock_lifecycle("devbox-atlas"):
+                entered.set()
+                await release.wait()
+
+        async def second() -> None:
+            nonlocal second_acquired
+            async with manager._lock_lifecycle("devbox-atlas"):
+                second_acquired = True
+
+        first_task = asyncio.create_task(first())
+        await entered.wait()
+        second_task = asyncio.create_task(second())
+        await asyncio.sleep(0)
+        assert second_acquired is False
+        release.set()
+        await asyncio.gather(first_task, second_task)
+
+    asyncio.run(exercise_lock())
+
+    assert manager._lifecycle_locks == {}
+
+
 def test_stopped_legacy_workspace_template_is_reconciled_without_starting_it() -> None:
     deployment = _legacy_deployment(0)
     apps = Mock()
     apps.list_namespaced_deployment.return_value = SimpleNamespace(items=[deployment])
-    apps.read_namespaced_deployment.return_value = _legacy_deployment(0)
+    apps.read_namespaced_deployment.side_effect = [deployment, _legacy_deployment(0)]
     core = Mock()
     core.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
         metadata=SimpleNamespace(
@@ -651,7 +708,7 @@ def test_insights_reconciliation_uses_the_pinned_gpu_snapshot() -> None:
     )
     apps = Mock()
     apps.list_namespaced_deployment.return_value = SimpleNamespace(items=[deployment])
-    apps.read_namespaced_deployment.return_value = _legacy_deployment(0)
+    apps.read_namespaced_deployment.side_effect = [deployment, _legacy_deployment(0)]
     core = Mock()
     core.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
         metadata=SimpleNamespace(
