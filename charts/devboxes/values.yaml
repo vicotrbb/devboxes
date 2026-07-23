@@ -41,6 +41,28 @@ workspace:
   image:
     repository: ghcr.io/vicotrbb/devboxes-workspace
     tag: ""
+  # Custom images are opt-in and operator-owned. A sidecar profile runs a
+  # compatible non-root application image beside the prepared Devboxes workspace.
+  # A workspace profile replaces it and must preserve the complete SSH contract.
+  customImages:
+    enabled: false
+    # Example profile fields:
+    # - name: nginx
+    #   displayName: NGINX preview
+    #   description: Serve a local static-site preview over the pod network
+    #   image: docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine
+    #   mode: sidecar
+    #   pullPolicy: IfNotPresent
+    #   resources:
+    #     cpuRequest: 25m
+    #     memoryRequest: 32Mi
+    #     cpuLimit: 500m
+    #     memoryLimit: 512Mi
+    #   ports:
+    #     - name: http
+    #       containerPort: 8080
+    #       protocol: TCP
+    profiles: []
   existingSecret: devboxes-workspace
   imagePullSecret: ""
   storageClass: ""

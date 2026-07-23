@@ -68,6 +68,7 @@ class CreateDevboxRequest(BaseModel):
     ttl_hours: int = Field(default=24, ge=1, le=168)
     repository: str | None = Field(default=None, max_length=240)
     gpu: GpuRequest | None = None
+    image: str | None = Field(default=None, max_length=512)
 
     @field_validator("name")
     @classmethod
@@ -91,6 +92,20 @@ class CreateDevboxRequest(BaseModel):
             raise ValueError("use owner/repository or an https://github.com/owner/repository URL")
         return value
 
+    @field_validator("image")
+    @classmethod
+    def valid_image_selector(cls, value: str | None) -> str | None:
+        """Accept only a compact operator-approved profile or image selector."""
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if any(character.isspace() for character in value) or "://" in value:
+            raise ValueError(
+                "use an operator-approved image profile or image reference without "
+                "whitespace or a URL scheme"
+            )
+        return value
+
 
 class GpuAllocation(BaseModel):
     """Describe the pinned GPU allocation attached to a devbox."""
@@ -99,6 +114,23 @@ class GpuAllocation(BaseModel):
     display_name: str
     resource_name: str
     count: int
+
+
+class CustomImagePortSummary(BaseModel):
+    """Describe an application port available only within one devbox pod."""
+
+    name: str
+    container_port: int
+    protocol: str
+
+
+class CustomImageAllocation(BaseModel):
+    """Describe the resolved image profile pinned to a devbox."""
+
+    profile: str
+    display_name: str
+    mode: str
+    ports: list[CustomImagePortSummary] = Field(default_factory=list)
 
 
 class Devbox(BaseModel):
@@ -119,6 +151,7 @@ class Devbox(BaseModel):
     storage_size: str
     message: str | None = None
     gpu: GpuAllocation | None = None
+    image: CustomImageAllocation | None = None
     instance_id: str | None = None
     insights_state: InsightsState = InsightsState.DISABLED
 
@@ -155,10 +188,28 @@ class GpuCapabilities(BaseModel):
     profiles: list[GpuProfileSummary]
 
 
+class CustomImageProfileSummary(BaseModel):
+    """Expose safe user-facing metadata for one custom image profile."""
+
+    name: str
+    display_name: str
+    description: str | None = None
+    mode: str
+    ports: list[CustomImagePortSummary] = Field(default_factory=list)
+
+
+class CustomImageCapabilities(BaseModel):
+    """Describe custom image profiles clients may request for new devboxes."""
+
+    enabled: bool
+    profiles: list[CustomImageProfileSummary]
+
+
 class Capabilities(BaseModel):
     """Describe installation capabilities that shape user workflows."""
 
     gpu: GpuCapabilities
+    images: CustomImageCapabilities
 
 
 class CliTokenRequest(BaseModel):

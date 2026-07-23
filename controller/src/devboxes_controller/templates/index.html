@@ -55,7 +55,7 @@
             <p>Compute expires into a safe stopped state. Your volume is never deleted automatically.</p>
           </div>
           <span class="capacity-note">
-            {{ storage_class }} storage · {{ workspace_service_type }} SSH{% if gpu.enabled %} · GPU profiles{% endif %}
+            {{ storage_class }} storage · {{ workspace_service_type }} SSH{% if gpu.enabled %} · GPU profiles{% endif %}{% if images.enabled %} · approved images{% endif %}
           </span>
         </div>
 
@@ -102,6 +102,22 @@
               {% endfor %}
             </select>
           </div>
+          {% if images.enabled %}
+          <div class="field field-image">
+            <label for="image">Container image <span>optional</span></label>
+            <select id="image" name="image" aria-describedby="image-help">
+              <option value="">Prepared Devboxes workspace</option>
+              {% for profile in images.profiles %}
+              <option
+                value="{{ profile.name }}"
+                data-description="{{ profile.description or '' }}"
+                data-mode="{{ profile.mode }}"
+                data-ports="{% for port in profile.ports %}{{ port.name }}:{{ port.container_port }}/{{ port.protocol }}{% if not loop.last %}, {% endif %}{% endfor %}"
+              >{{ profile.display_name }} · {{ profile.mode }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endif %}
           <div class="field field-repository">
             <label for="repository">GitHub repository <span>optional</span></label>
             <input id="repository" name="repository" type="text" placeholder="owner/repository" autocomplete="off">
@@ -109,6 +125,11 @@
           <button class="button button-primary create-button" type="submit">
             <span>Create devbox</span>
           </button>
+          {% if images.enabled %}
+          <p id="image-help" class="field-help image-profile-help">
+            Select an operator-approved image profile. Service images run as non-root sidecars on high ports without Secret mounts or Kubernetes credentials.
+          </p>
+          {% endif %}
         </form>
         <p id="create-error" class="form-error" role="alert" tabindex="-1" hidden></p>
       </section>

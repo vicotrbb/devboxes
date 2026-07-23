@@ -115,6 +115,31 @@ Replace `nvidia.com/gpu` with the profile's resource. `Insufficient RESOURCE` me
 
 Do not patch the generated Deployment or add privileged mode and host device mounts. The controller owns that resource, and manual changes make the box non-reproducible. Correct the driver, capacity, or Helm profile, then delete and recreate a disposable test box. Existing boxes intentionally retain their creation-time profile snapshot.
 
+## A custom image profile fails
+
+First confirm the selected profile and the generated container contract:
+
+```bash
+devbox status atlas
+devbox image profiles
+kubectl get deployment devbox-atlas -n devboxes \
+  -o jsonpath='{.metadata.annotations.image\.devboxes\.bonalab\.org/profile}{"\n"}{.spec.template.spec.containers[*].name}{"\n"}'
+kubectl describe pod -n devboxes \
+  -l devboxes.bonalab.org/name=atlas
+```
+
+For a sidecar profile, inspect its own logs and verify the declared pod-local port from the workspace container:
+
+```bash
+kubectl logs deployment/devbox-atlas -n devboxes -c custom-image --tail=100
+kubectl exec deployment/devbox-atlas -n devboxes -c devbox -- \
+  curl --fail http://127.0.0.1:8080/
+```
+
+`ErrImagePull` and `ImagePullBackOff` indicate a registry, architecture, reference, or pull-credential problem. Validate the approved image on an eligible node before changing the profile. A crash loop after a successful pull is application behavior; check the image's expected environment and command, remembering that Devboxes intentionally does not inject credentials, persistent storage, or a public Service into a sidecar. Sidecars must already run as a non-root user and use a port from 1024 through 65535. For NGINX, use the unprivileged image variant rather than weakening the generated security context.
+
+For a workspace-mode profile, test the complete Devboxes contract instead of treating it like a generic container. The primary container must initialize the persistent home and start SSH on port `2222`. Revert the profile to a known compatible Devboxes-derived image if SSH readiness fails. Do not work around this by patching a generated Deployment, adding privilege, or mounting host paths.
+
 ## SSH address remains pending
 
 For `LoadBalancer`, inspect `.status.loadBalancer.ingress` and the load-balancer controller events:

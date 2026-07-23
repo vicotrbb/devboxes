@@ -24,6 +24,27 @@
 {{- if and .Values.gpu.enabled (not .Values.gpu.defaultProfile) }}
 {{- fail "gpu.defaultProfile is required when gpu.enabled=true" }}
 {{- end }}
+{{- $customImageNames := dict }}
+{{- $customImageReferences := dict }}
+{{- range .Values.workspace.customImages.profiles }}
+{{- if hasKey $customImageNames .name }}
+{{- fail (printf "workspace.customImages contains duplicate name %q" .name) }}
+{{- end }}
+{{- if hasKey $customImageReferences .image }}
+{{- fail (printf "workspace.customImages contains duplicate image %q" .image) }}
+{{- end }}
+{{- if not (trim .displayName) }}
+{{- fail (printf "custom image profile %q displayName must not be blank" .name) }}
+{{- end }}
+{{- if contains "://" .image }}
+{{- fail (printf "custom image profile %q image must not contain a URL scheme" .name) }}
+{{- end }}
+{{- $_ := set $customImageNames .name true }}
+{{- $_ := set $customImageReferences .image true }}
+{{- end }}
+{{- if and .Values.workspace.customImages.enabled (eq (len .Values.workspace.customImages.profiles) 0) }}
+{{- fail "workspace.customImages.profiles is required when workspace.customImages.enabled=true" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -161,6 +182,10 @@ spec:
             {{- end }}
             - name: DEVBOXES_WORKSPACE_IMAGE
               value: {{ include "devboxes.workspaceImage" . | quote }}
+            - name: DEVBOXES_CUSTOM_IMAGES_ENABLED
+              value: {{ .Values.workspace.customImages.enabled | quote }}
+            - name: DEVBOXES_CUSTOM_IMAGES
+              value: {{ .Values.workspace.customImages.profiles | toJson | quote }}
             - name: DEVBOXES_WORKSPACE_SECRET_NAME
               value: {{ .Values.workspace.existingSecret | quote }}
             - name: DEVBOXES_WORKSPACE_SERVICE_ACCOUNT_NAME

@@ -56,6 +56,54 @@ master token in derived mode, or rotating the dedicated key, revokes all issued 
 
 The namespace must permit the workspace pod's documented `sudo` capability set. Kubernetes Pod Security `baseline` is compatible; `restricted` is not.
 
+## Custom image profiles
+
+Custom images are disabled by default. Enable a small operator-owned catalog when users need a prebuilt service or a tested Devboxes workspace derivative. The controller accepts only a configured profile name or its exact configured image reference, resolves it before creating Kubernetes resources, and pins the complete profile on the resulting Deployment.
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `workspace.customImages.enabled` | `false` | Publish configured profiles and accept image requests |
+| `workspace.customImages.profiles[].name` | none | Stable lowercase identifier exposed to clients |
+| `workspace.customImages.profiles[].displayName` | none | Human-readable catalog label |
+| `workspace.customImages.profiles[].description` | empty | Short service or workspace purpose |
+| `workspace.customImages.profiles[].image` | none | Reviewed container reference, preferably digest-pinned |
+| `workspace.customImages.profiles[].mode` | `sidecar` | `sidecar` for application images or `workspace` for a compatible Devboxes derivative |
+| `workspace.customImages.profiles[].pullPolicy` | `IfNotPresent` | `Always`, `IfNotPresent`, or `Never` |
+| `workspace.customImages.profiles[].resources.cpuRequest` | `25m` | Sidecar CPU request; rejected for a workspace profile |
+| `workspace.customImages.profiles[].resources.memoryRequest` | `32Mi` | Sidecar memory request; rejected for a workspace profile |
+| `workspace.customImages.profiles[].resources.cpuLimit` | `500m` | Sidecar CPU limit; rejected for a workspace profile |
+| `workspace.customImages.profiles[].resources.memoryLimit` | `512Mi` | Sidecar memory limit; rejected for a workspace profile |
+| `workspace.customImages.profiles[].ports` | `[]` | Optional named pod-local ports from 1024 through 65535 for discovery and SSH tunnels |
+
+Example service sidecar profile:
+
+```yaml
+workspace:
+  customImages:
+    enabled: true
+    profiles:
+      - name: nginx
+        displayName: NGINX preview
+        description: Serve a local static-site preview
+        image: docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine
+        mode: sidecar
+        pullPolicy: IfNotPresent
+        resources:
+          cpuRequest: 25m
+          memoryRequest: 32Mi
+          cpuLimit: 500m
+          memoryLimit: 512Mi
+        ports:
+          - name: http
+            containerPort: 8080
+```
+
+A sidecar receives no Devboxes Secret, persistent-volume mount, Kubernetes service-account token, extra capability, or public Kubernetes Service. It must run as a non-root user on an unprivileged port from 1024 through 65535. It shares only the pod network namespace, so a user can reach a declared port through `devbox ssh NAME -- -L LOCAL:127.0.0.1:PORT`.
+
+`mode: workspace` replaces the interactive container. Use it only for a tested derivative of the matching Devboxes workspace image that preserves the entrypoint, `dev` user, SSH service on port `2222`, persistent-home setup, mounted Secret handling, and readiness behavior. Workspace profiles use the selected Devboxes preset for compute and cannot declare the sidecar-only `resources` envelope. A workspace image cannot combine with a GPU profile that defines `workspaceImage`; a sidecar profile can combine with GPU because it does not alter the primary workspace container.
+
+The chart rejects unknown fields, duplicate profile names or image references, unsafe image strings, privileged ports, more than 32 profiles, and enabled configurations without profiles. The controller validates resource quantities and limits before serving requests. Existing devboxes retain their pinned profiles if the catalog later changes or is disabled. See [custom image profiles](images.md) for the full security and lifecycle model.
+
 ## GPU acceleration
 
 GPU acceleration is disabled by default. Operators configure one or more named profiles and choose a default profile for `devbox create --gpu`. CPU-only creation remains available regardless of whether GPU support is enabled.

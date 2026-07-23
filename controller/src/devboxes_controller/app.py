@@ -53,6 +53,9 @@ from .models import (
     CliTokenRequest,
     CliTokenResponse,
     CreateDevboxRequest,
+    CustomImageCapabilities,
+    CustomImagePortSummary,
+    CustomImageProfileSummary,
     DeleteResult,
     Devbox,
     DevboxList,
@@ -93,7 +96,28 @@ def _capabilities(settings: Settings) -> Capabilities:
                 for profile in settings.gpu_profiles
                 if settings.gpu_enabled
             ],
-        )
+        ),
+        images=CustomImageCapabilities(
+            enabled=settings.custom_images_enabled,
+            profiles=[
+                CustomImageProfileSummary(
+                    name=profile.name,
+                    display_name=profile.display_name,
+                    description=profile.description,
+                    mode=profile.mode,
+                    ports=[
+                        CustomImagePortSummary(
+                            name=port.name,
+                            container_port=port.container_port,
+                            protocol=port.protocol,
+                        )
+                        for port in profile.ports
+                    ],
+                )
+                for profile in settings.custom_images
+                if settings.custom_images_enabled
+            ],
+        ),
     )
 
 
@@ -399,6 +423,7 @@ def create_app(
                 "storage_class": settings.storage_class or "cluster default",
                 "workspace_service_type": settings.workspace_service_type,
                 "gpu": capabilities.gpu,
+                "images": capabilities.images,
                 "version": __version__,
             },
         )
@@ -444,6 +469,7 @@ def create_app(
                 ],
                 "insights_enabled": insights.enabled,
                 "gpu": capabilities.gpu,
+                "images": capabilities.images,
                 "version": __version__,
             },
         )

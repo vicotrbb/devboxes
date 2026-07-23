@@ -16,8 +16,9 @@ use tokio::time::{Instant, sleep};
 use client::ApiClient;
 use config::StoredConfig;
 use models::{
-    CollectorStatus, CreateDevbox, Devbox, GpuCapabilities, GpuRequest, InsightsActivity,
-    InsightsActivityData, InsightsEnvelope, InsightsStatusData, InsightsSummary, Preset,
+    CollectorStatus, CreateDevbox, CustomImageCapabilities, Devbox, GpuCapabilities, GpuRequest,
+    InsightsActivity, InsightsActivityData, InsightsEnvelope, InsightsStatusData, InsightsSummary,
+    Preset,
 };
 
 #[derive(Parser)]
@@ -65,6 +66,8 @@ enum Commands {
     Metrics(MetricsArgs),
     /// Inspect GPU acceleration profiles configured by the operator.
     Gpu(GpuArgs),
+    /// Inspect custom image profiles configured by the operator.
+    Image(ImageArgs),
 }
 
 #[derive(Args)]
@@ -94,6 +97,10 @@ struct CreateArgs {
     #[arg(long)]
     repo: Option<String>,
 
+    /// Request an operator-approved image profile or exact approved image reference.
+    #[arg(long, value_name = "PROFILE_OR_IMAGE", value_parser = validate_image_selector)]
+    image: Option<String>,
+
     /// Request the operator's default GPU profile.
     #[arg(long)]
     gpu: bool,
@@ -117,9 +124,21 @@ struct GpuArgs {
     command: Option<GpuCommand>,
 }
 
+#[derive(Args)]
+struct ImageArgs {
+    #[command(subcommand)]
+    command: Option<ImageCommand>,
+}
+
 #[derive(Subcommand)]
 enum GpuCommand {
     /// List the GPU profiles available for new devboxes.
+    Profiles,
+}
+
+#[derive(Subcommand)]
+enum ImageCommand {
+    /// List the custom image profiles available for new devboxes.
     Profiles,
 }
 
@@ -272,6 +291,7 @@ async fn main() -> Result<()> {
         Commands::Delete(args) => delete(&client, args).await,
         Commands::Metrics(args) => metrics(&client, args, cli.json).await,
         Commands::Gpu(args) => gpu(&client, args, cli.json).await,
+        Commands::Image(args) => image(&client, args, cli.json).await,
     }
 }
 
@@ -375,6 +395,22 @@ fn validate_name(value: &str) -> std::result::Result<String, String> {
     }
 }
 
+fn validate_image_selector(value: &str) -> std::result::Result<String, String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 512
+        || value.chars().any(char::is_whitespace)
+        || value.contains("://")
+    {
+        Err(
+            "use an operator-approved image profile or image reference without whitespace or a URL scheme"
+                .to_owned(),
+        )
+    } else {
+        Ok(value.to_owned())
+    }
+}
+
 async fn create(
     client: &ApiClient,
     args: CreateArgs,
@@ -393,6 +429,7 @@ async fn create(
         preset: args.preset,
         ttl_hours: args.ttl,
         repository: args.repo.as_deref(),
+        image: args.image.as_deref(),
         gpu,
     };
     let mut box_info = client.create(&payload).await?;
@@ -418,17 +455,18 @@ async fn list(client: &ApiClient, json: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<22} {:<11} {:<8} {:<16} {:<18} SSH",
-        "NAME", "STATE", "SIZE", "AUTO-STOP", "ACCELERATOR"
+        "{:<22} {:<11} {:<8} {:<16} {:<18} {:<18} SSH",
+        "NAME", "STATE", "SIZE", "AUTO-STOP", "ACCELERATOR", "IMAGE"
     );
     for box_info in boxes {
         println!(
-            "{:<22} {:<11} {:<8} {:<16} {:<18} {}",
+            "{:<22} {:<11} {:<8} {:<16} {:<18} {:<18} {}",
             box_info.name,
             box_info.state,
             box_info.preset,
             human_expiry(&box_info),
             gpu_label(&box_info),
+            image_label(&box_info),
             box_info.ssh_command.as_deref().unwrap_or("pending"),
         );
     }
@@ -569,6 +607,21 @@ async fn gpu(client: &ApiClient, args: GpuArgs, json: bool) -> Result<()> {
     Ok(())
 }
 
+async fn image(client: &ApiClient, args: ImageArgs, json: bool) -> Result<()> {
+    let ImageArgs { command } = args;
+    match command {
+        None | Some(ImageCommand::Profiles) => {
+            let capabilities = client.capabilities().await?.images;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&capabilities)?);
+            } else {
+                print_image_profiles(&capabilities);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn print_gpu_profiles(capabilities: &GpuCapabilities) {
     if !capabilities.enabled {
         println!("GPU acceleration is disabled by the operator.");
@@ -587,6 +640,33 @@ fn print_gpu_profiles(capabilities: &GpuCapabilities) {
             profile.resource_name,
             profile.description.as_deref().unwrap_or(""),
             if profile.is_default { " (default)" } else { "" },
+        );
+    }
+}
+
+fn print_image_profiles(capabilities: &CustomImageCapabilities) {
+    if !capabilities.enabled {
+        println!("Custom images are disabled by the operator.");
+        return;
+    }
+    println!(
+        "{:<18} {:<26} {:<10} PORTS DESCRIPTION",
+        "PROFILE", "NAME", "MODE"
+    );
+    for profile in &capabilities.profiles {
+        let ports = profile
+            .ports
+            .iter()
+            .map(|port| format!("{}:{}/{}", port.name, port.container_port, port.protocol))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "{:<18} {:<26} {:<10} {:<16} {}",
+            profile.name,
+            profile.display_name,
+            profile.mode,
+            ports,
+            profile.description.as_deref().unwrap_or(""),
         );
     }
 }
@@ -847,6 +927,18 @@ fn print_box(box_info: &Devbox, json: bool) -> Result<()> {
             gpu.display_name, gpu.count, gpu.resource_name
         );
     }
+    if let Some(image) = &box_info.image {
+        println!("  image:      {} ({})", image.display_name, image.mode);
+        if !image.ports.is_empty() {
+            let ports = image
+                .ports
+                .iter()
+                .map(|port| format!("{}:{}/{}", port.name, port.container_port, port.protocol))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("  image ports: {ports}");
+        }
+    }
     println!("  auto-stop:  {}", box_info.expires_at.to_rfc3339());
     if let Some(repository) = &box_info.repository {
         println!("  repository: {repository}");
@@ -866,6 +958,13 @@ fn gpu_label(box_info: &Devbox) -> &str {
         .map_or("cpu", |gpu| gpu.profile.as_str())
 }
 
+fn image_label(box_info: &Devbox) -> &str {
+    box_info
+        .image
+        .as_ref()
+        .map_or("prepared", |image| image.profile.as_str())
+}
+
 fn human_expiry(box_info: &Devbox) -> String {
     if box_info.state == "stopped" {
         return "stopped".to_owned();
@@ -883,8 +982,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        Cli, Commands, GpuCommand, MetricsCommand, human_duration, metrics_query,
-        resolve_login_token, ssh_arguments, validate_name,
+        Cli, Commands, GpuCommand, ImageCommand, MetricsCommand, human_duration, metrics_query,
+        resolve_login_token, ssh_arguments, validate_image_selector, validate_name,
     };
 
     #[test]
@@ -913,6 +1012,16 @@ mod tests {
         assert!(validate_name("atlas-").is_err());
         assert!(validate_name("atlas/other").is_err());
         assert!(validate_name(&"a".repeat(41)).is_err());
+    }
+
+    #[test]
+    fn image_selectors_match_the_controller_contract() {
+        assert_eq!(
+            validate_image_selector(" docker.io/library/nginx:1.27 ").unwrap(),
+            "docker.io/library/nginx:1.27"
+        );
+        assert!(validate_image_selector("https://registry.example/image:tag").is_err());
+        assert!(validate_image_selector("image with spaces").is_err());
     }
 
     #[test]
@@ -1018,6 +1127,38 @@ mod tests {
             panic!("expected gpu command");
         };
         assert!(matches!(profiles.command, Some(GpuCommand::Profiles)));
+    }
+
+    #[test]
+    fn image_profiles_and_create_image_are_discoverable() {
+        let root = Cli::try_parse_from(["devbox", "image"]).unwrap();
+        let Commands::Image(root) = root.command else {
+            panic!("expected image command");
+        };
+        assert!(root.command.is_none());
+
+        let profiles = Cli::try_parse_from(["devbox", "image", "profiles", "--json"]).unwrap();
+        assert!(profiles.json);
+        let Commands::Image(profiles) = profiles.command else {
+            panic!("expected image command");
+        };
+        assert!(matches!(profiles.command, Some(ImageCommand::Profiles)));
+
+        let create = Cli::try_parse_from([
+            "devbox",
+            "create",
+            "nginx",
+            "--image",
+            "docker.io/library/nginx:1.27",
+        ])
+        .unwrap();
+        let Commands::Create(create) = create.command else {
+            panic!("expected create command");
+        };
+        assert_eq!(
+            create.image.as_deref(),
+            Some("docker.io/library/nginx:1.27")
+        );
     }
 
     #[test]

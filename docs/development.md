@@ -49,7 +49,7 @@ Set `DEVBOX_CONFIG` to a temporary path during development to avoid changing you
 
 The server-rendered UI lives under `controller/src/devboxes_controller/templates`, with plain CSS and JavaScript under `static`. Preserve WCAG 2.2 AA contrast, complete keyboard operation, visible focus, textual status, responsive layouts, and reduced-motion support. Keep inline scripts and handlers out of templates so the Content Security Policy remains strict.
 
-The test fake can preview all lifecycle states and multiple GPU profiles without a Kubernetes cluster:
+The test fake can preview all lifecycle states, multiple GPU profiles, and an approved non-root, high-port custom image profile without a Kubernetes cluster:
 
 ```bash
 cd controller
@@ -90,6 +90,8 @@ kind create cluster --name devboxes
 The CI Kind job builds both images and the CLI, loads the images into a clean cluster, creates placeholder Secrets, and installs the local chart with Insights enabled. It exercises the authenticated API, SSH, scoped ingest Secret, provider-shaped OTLP batches, batch deduplication, Git baseline and activity, durable outbox during controller downtime, central database persistence, retained identity, CLI output and exports, explicit Insights purge, workspace recreation, host identity, and final PVC purge.
 
 GPU coverage is intentionally layered because ordinary Kind workers do not expose production accelerator hardware. Controller tests prove disabled and named-profile API behavior, exact pod resources and scheduling fields, scheduler diagnostics, allocation reporting, and pinned profile reconciliation. CLI tests prove command parsing and request shape. `scripts/test-helm-gpu.sh` proves disabled, enabled, and invalid chart contracts. The clean-cluster test enables an intentionally unschedulable extended resource and proves capability discovery, CLI and API selection, the generated pod contract, Pending diagnostics, and complete cleanup. A real GPU cluster remains the acceptance environment for vendor driver, runtime, image, and workload compatibility.
+
+Custom image coverage is layered too. Controller tests prove catalog parsing, disabled and unknown-selector rejection before Kubernetes writes, exact sidecar and workspace manifests, secret and volume isolation, response reporting, pinned-profile reconciliation, and GPU workspace-image conflict rejection. CLI tests prove profile discovery and `--image` request shape. `scripts/test-helm-images.sh` proves disabled, enabled, and invalid chart contracts. The clean-cluster test builds a small service fixture, loads it into Kind, verifies the sidecar has no workspace mounts or credentials, reaches it over pod loopback, exercises SSH tunneling, and verifies cleanup. A deployment with real private registries or workspace-mode derivatives also requires the operator's production image, registry, architecture, and SSH lifecycle acceptance checks.
 
 Privacy tests use fixtures derived from exact Codex and Claude Code clients pinned in the workspace image. Fixtures must use synthetic values. Never commit a real prompt, response, command, path, repository name, email address, provider credential, account identifier, or session identifier. The agent and controller sanitizers are separate trust boundaries and both require regression coverage.
 

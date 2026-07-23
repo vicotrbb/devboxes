@@ -362,6 +362,14 @@ h3 {
   gap: var(--space-3);
 }
 
+.field-image {
+  grid-column: span 2;
+}
+
+.field-repository {
+  grid-column: span 4;
+}
+
 .field {
   display: flex;
   min-width: 0;
@@ -476,8 +484,10 @@ select:focus {
 }
 
 .create-button {
+  width: 100%;
   min-width: 8.5rem;
   min-height: 2.7rem;
+  grid-column: span 2;
 }
 
 .create-button[aria-busy="true"] span::after {
@@ -1424,6 +1434,11 @@ kbd {
   font-size: 0.78rem;
 }
 
+.image-profile-help {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .security-note {
   margin: var(--space-6) 0 0;
   color: var(--muted);
@@ -1539,6 +1554,14 @@ kbd {
     grid-column: span 3;
   }
 
+  .create-button {
+    grid-column: span 1;
+  }
+
+  .field-image {
+    grid-column: span 2;
+  }
+
   .docs-layout {
     grid-template-columns: 13rem minmax(0, 1fr);
     gap: var(--space-7);
@@ -1615,6 +1638,10 @@ kbd {
     grid-column: span 2;
   }
 
+  .field-image {
+    grid-column: span 2;
+  }
+
   .create-button {
     width: 100%;
     grid-column: span 2;
@@ -1685,6 +1712,14 @@ kbd {
   }
 
   .field-repository {
+    grid-column: auto;
+  }
+
+  .field-image {
+    grid-column: auto;
+  }
+
+  .image-profile-help {
     grid-column: auto;
   }
 

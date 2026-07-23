@@ -38,6 +38,7 @@
             <a href="#lifecycle">What persists</a>
             <a href="#create">Create a box</a>
             <a href="#gpu">GPU acceleration</a>
+            <a href="#images">Approved images</a>
             <a href="#ssh-tmux">SSH and tmux</a>
             <a href="#accounts">Accounts and tools</a>
             <a href="#daily-workflow">Daily workflow</a>
@@ -280,6 +281,65 @@ devbox create training --gpu-profile {{ gpu.profiles[0].name }} --preset large -
           {% endif %}
         </section>
 
+        <section class="docs-section" id="images" tabindex="-1">
+          <h2>Use an operator-approved image</h2>
+          {% if images.enabled %}
+          <p>
+            This installation exposes {{ images.profiles | length }} approved image profile{% if images.profiles | length != 1 %}s{% endif %}.
+            Select a profile with <code>--image</code> or in the workbench. A service profile runs beside
+            the prepared SSH workspace without its Secret mounts or Kubernetes credentials. A workspace
+            profile is a vetted Devboxes-derived image that replaces the interactive container.
+          </p>
+
+          <div class="docs-table-wrap" tabindex="0" aria-label="Available custom image profile table; scroll horizontally if needed">
+            <table class="docs-table">
+              <thead>
+                <tr>
+                  <th scope="col">Profile</th>
+                  <th scope="col">Mode</th>
+                  <th scope="col">Pod-local ports</th>
+                  <th scope="col">Purpose</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for profile in images.profiles %}
+                <tr>
+                  <th scope="row"><code>{{ profile.name }}</code></th>
+                  <td>{{ "Service sidecar" if profile.mode == "sidecar" else "Workspace" }}</td>
+                  <td>{% if profile.ports %}{% for port in profile.ports %}<code>{{ port.name }}:{{ port.container_port }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}None declared{% endif %}</td>
+                  <td>{{ profile.description or profile.display_name }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="command-block">
+            <div class="command-heading">
+              <span>Discover and request an approved image</span>
+              <button class="command-copy" type="button" data-copy-target="image-command" aria-label="Copy custom image commands">Copy</button>
+            </div>
+            <pre><code id="image-command">devbox image profiles
+{% if images.profiles %}devbox create preview --image {{ images.profiles[0].name }} --ssh{% else %}devbox create preview --image PROFILE --ssh{% endif %}</code></pre>
+          </div>
+
+          <p>
+            The selected profile is resolved before any Kubernetes resource is created and is pinned to
+            the devbox Deployment. Service sidecars must run non-root and use a declared port from 1024
+            through 65535; their generated containers receive no Devboxes credentials or volume mounts.
+            Stop, start, TTL expiry, and Insights reconciliation retain the same contract. For a declared
+            service port, tunnel through SSH, for example
+            <code>devbox ssh preview -- -L 8080:127.0.0.1:8080</code>. Do not use a generic application
+            image as a workspace profile unless it preserves the complete Devboxes SSH and lifecycle contract.
+          </p>
+          {% else %}
+          <p>
+            Approved custom images are disabled for this installation. An operator can configure a
+            reviewed image catalog through Helm. The API does not accept unrestricted image references.
+          </p>
+          {% endif %}
+        </section>
+
         <section class="docs-section" id="ssh-tmux" tabindex="-1">
           <h2>Work through SSH and tmux</h2>
           <p>
@@ -444,6 +504,7 @@ devbox metrics export --format csv &gt; insights.csv</code></pre>
           </p>
           <ul class="docs-bullets">
             <li>The fleet refreshes automatically every eight seconds; manual refresh is also available.</li>
+            <li>When enabled, the create form presents reviewed image profiles rather than accepting a raw container reference.</li>
             <li>State is written as text, ready, starting, stopped, or degraded, rather than conveyed by color alone.</li>
             <li>Deleting opens a confirmation that distinguishes retained storage from permanent purge.</li>
             <li>The same access token creates a signed browser session; the raw token is not kept in the session cookie.</li>
@@ -464,7 +525,8 @@ devbox metrics export --format csv &gt; insights.csv</code></pre>
               </thead>
               <tbody>
                 <tr><th scope="row"><code>devbox login</code></th><td>Verifies and saves API access.</td><td><code>--url</code>, <code>--token</code></td></tr>
-                <tr><th scope="row"><code>devbox create NAME</code></th><td>Creates a prepared box and waits for readiness.</td><td><code>--preset</code>, <code>--ttl</code>, <code>--repo</code>, <code>--ssh</code>, <code>--no-wait</code></td></tr>
+                <tr><th scope="row"><code>devbox create NAME</code></th><td>Creates a prepared box and waits for readiness.</td><td><code>--preset</code>, <code>--ttl</code>, <code>--repo</code>, <code>--image</code>, <code>--ssh</code>, <code>--no-wait</code></td></tr>
+                <tr><th scope="row"><code>devbox image profiles</code></th><td>Lists the operator-approved image catalog.</td><td><code>--json</code></td></tr>
                 <tr><th scope="row"><code>devbox list</code></th><td>Lists every active or stopped box.</td><td><code>--json</code></td></tr>
                 <tr><th scope="row"><code>devbox status NAME</code></th><td>Shows one box, its expiry, storage, and SSH state.</td><td><code>--json</code></td></tr>
                 <tr><th scope="row"><code>devbox ssh NAME</code></th><td>Connects and attaches to tmux session <code>main</code>.</td><td><code>-- &lt;ssh options&gt;</code></td></tr>
@@ -491,6 +553,10 @@ devbox metrics export --format csv &gt; insights.csv</code></pre>
           <details class="docs-disclosure">
             <summary>A box stays in “starting”</summary>
             <p>Allow the first image pull and workspace initialization a few minutes. If it remains pending, inspect the dashboard message, SSH service address availability, and pod events.</p>
+          </details>
+          <details class="docs-disclosure">
+            <summary>An approved image will not start</summary>
+            <p>Check the selected profile in <code>devbox image profiles</code>, then inspect the pod events and the <code>custom-image</code> container logs. Confirm the operator-approved image can pull on the selected node and that its declared application port matches the tunnel target.</p>
           </details>
           <details class="docs-disclosure">
             <summary>The repository did not clone</summary>

@@ -15,9 +15,11 @@ from kubernetes.client.exceptions import ApiException
 from kubernetes.utils.quantity import parse_quantity
 
 from .auth import Authenticator
-from .config import GpuProfile, Settings
+from .config import CustomImageProfile, GpuProfile, Settings
 from .models import (
     CreateDevboxRequest,
+    CustomImageAllocation,
+    CustomImagePortSummary,
     DeleteResult,
     Devbox,
     DevboxState,
@@ -28,6 +30,8 @@ from .models import (
 from .resources import (
     ANNOTATION_AUTO_STOPPED_AT,
     ANNOTATION_CREATED_AT,
+    ANNOTATION_CUSTOM_IMAGE_CONFIG,
+    ANNOTATION_CUSTOM_IMAGE_PROFILE,
     ANNOTATION_EXPIRES_AT,
     ANNOTATION_GPU_CONFIG,
     ANNOTATION_GPU_COUNT,
@@ -107,6 +111,19 @@ class DevboxManager:
             if request.gpu is not None
             else None
         )
+        custom_image = (
+            self.settings.resolve_custom_image(request.image) if request.image is not None else None
+        )
+        if (
+            custom_image is not None
+            and custom_image.mode == "workspace"
+            and gpu_profile is not None
+            and gpu_profile.workspace_image is not None
+        ):
+            raise ValueError(
+                "a custom workspace image cannot be combined with a GPU profile "
+                "that selects a workspace image"
+            )
 
         name = resource_name(request.name)
         if await self._deployment_exists(name):
@@ -168,6 +185,7 @@ class DevboxManager:
             self.settings.workspace_priority_class,
             self.settings.image_pull_secret,
             gpu_profile=gpu_profile,
+            custom_image=custom_image,
             instance_id=instance_id,
             insights_enabled=self.settings.insights_enabled,
             insights_endpoint=self.settings.insights_controller_url,
@@ -565,8 +583,10 @@ class DevboxManager:
                 self.settings.max_ttl_hours,
             ),
             repository=annotations.get(ANNOTATION_REPOSITORY),
+            image=annotations.get(ANNOTATION_CUSTOM_IMAGE_PROFILE),
         )
         gpu_profile = _resolved_gpu_profile(annotations, self.settings)
+        custom_image = _resolved_custom_image(annotations, self.settings)
         credential = self.authenticator.issue_insights_token(instance_id, name)
         secret_name = await self._ensure_insights_secret(name, instance_id, credential)
         desired = build_deployment(
@@ -578,6 +598,7 @@ class DevboxManager:
             self.settings.workspace_priority_class,
             self.settings.image_pull_secret,
             gpu_profile=gpu_profile,
+            custom_image=custom_image,
             instance_id=instance_id,
             insights_enabled=True,
             insights_endpoint=self.settings.insights_controller_url,
@@ -659,6 +680,7 @@ class DevboxManager:
             storage_size=annotations.get(ANNOTATION_STORAGE, "20Gi"),
             message=message,
             gpu=_gpu_allocation(annotations),
+            image=_custom_image_allocation(annotations),
             instance_id=annotations.get(ANNOTATION_INSTANCE_ID),
             insights_state=_insights_state(self.settings.insights_enabled, deployment, desired),
         )
@@ -794,6 +816,29 @@ def _resolved_gpu_profile(
     return None
 
 
+def _resolved_custom_image(
+    annotations: dict[str, str],
+    settings: Settings,
+) -> CustomImageProfile | None:
+    """Recover the pinned custom image profile used by an existing workspace."""
+    raw_profile = annotations.get(ANNOTATION_CUSTOM_IMAGE_CONFIG)
+    if raw_profile:
+        try:
+            return CustomImageProfile.model_validate_json(raw_profile)
+        except ValueError as error:
+            raise ValueError("stored custom image configuration is invalid") from error
+    profile_name = annotations.get(ANNOTATION_CUSTOM_IMAGE_PROFILE)
+    if profile_name:
+        for profile in settings.custom_images:
+            if profile.name == profile_name:
+                return profile
+        raise ValueError(
+            f"stored custom image profile {profile_name!r} is unavailable "
+            "and has no resolved snapshot"
+        )
+    return None
+
+
 def _gpu_allocation(annotations: dict[str, str]) -> GpuAllocation | None:
     """Build a stable user-facing GPU allocation from Deployment annotations."""
     profile_name = annotations.get(ANNOTATION_GPU_PROFILE)
@@ -822,6 +867,40 @@ def _gpu_allocation(annotations: dict[str, str]) -> GpuAllocation | None:
         resource_name=annotations.get(ANNOTATION_GPU_RESOURCE, "unknown"),
         count=count,
     )
+
+
+def _custom_image_allocation(
+    annotations: dict[str, str],
+) -> CustomImageAllocation | None:
+    """Build a stable user-facing custom image allocation from Deployment annotations."""
+    raw_profile = annotations.get(ANNOTATION_CUSTOM_IMAGE_CONFIG)
+    if raw_profile:
+        try:
+            profile = CustomImageProfile.model_validate_json(raw_profile)
+        except ValueError:
+            profile = None
+        if profile is not None:
+            return CustomImageAllocation(
+                profile=profile.name,
+                display_name=profile.display_name,
+                mode=profile.mode,
+                ports=[
+                    CustomImagePortSummary(
+                        name=port.name,
+                        container_port=port.container_port,
+                        protocol=port.protocol,
+                    )
+                    for port in profile.ports
+                ],
+            )
+    profile_name = annotations.get(ANNOTATION_CUSTOM_IMAGE_PROFILE)
+    if profile_name:
+        return CustomImageAllocation(
+            profile=profile_name,
+            display_name=profile_name,
+            mode="unknown",
+        )
+    return None
 
 
 def _has_insights_sidecar(deployment: Any) -> bool:

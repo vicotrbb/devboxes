@@ -4,6 +4,19 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- Added opt-in custom image profiles across Helm, the API, CLI, dashboard, authenticated documentation, and public documentation. Profiles support isolated pod-local service sidecars and explicitly vetted Devboxes-compatible workspace derivatives.
+- Added `devbox image profiles` and `devbox create --image PROFILE_OR_IMAGE`, resolved image allocation reporting, bounded sidecar resources and ports, strict chart/controller validation, and Helm contract tests.
+
+### Changed
+
+- Persist the fully resolved custom image profile on each workspace so stop, start, TTL expiry, and Insights template reconciliation cannot silently change an existing image contract after Helm configuration changes.
+
+### Security
+
+- Restrict custom image selection to an operator-approved catalog. Sidecars receive no Devboxes Secret, persistent-home mount, Kubernetes API token, public Service, extra capability, command override, or scheduling injection surface.
+
 ## [0.4.0] - 2026-07-20
 
 ### Added

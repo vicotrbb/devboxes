@@ -1,10 +1,18 @@
+import json
 from datetime import UTC, datetime
 
 import pytest
 
-from devboxes_controller.config import GpuProfile, GpuToleration
+from devboxes_controller.config import (
+    CustomImagePort,
+    CustomImageProfile,
+    GpuProfile,
+    GpuToleration,
+)
 from devboxes_controller.models import CreateDevboxRequest, Preset
 from devboxes_controller.resources import (
+    ANNOTATION_CUSTOM_IMAGE_CONFIG,
+    ANNOTATION_CUSTOM_IMAGE_PROFILE,
     ANNOTATION_GPU_CONFIG,
     ANNOTATION_GPU_COUNT,
     ANNOTATION_GPU_PROFILE,
@@ -198,3 +206,84 @@ def test_gpu_profile_is_applied_only_to_the_workspace_container() -> None:
     assert "nvidia.com/gpu" not in pod["containers"][1]["resources"]["requests"]
     assert "nvidia.com/gpu" not in pod["containers"][1]["resources"]["limits"]
     assert pod["containers"][1]["image"] == "ghcr.io/vicotrbb/devboxes-workspace:test"
+
+
+def test_custom_service_image_is_an_isolated_sidecar_with_pinned_contract() -> None:
+    profile = CustomImageProfile(
+        name="nginx",
+        displayName="NGINX preview",
+        image="docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine",
+        pullPolicy="Always",
+        ports=[CustomImagePort(name="http", containerPort=8080)],
+    )
+    deployment = build_deployment(
+        request(),
+        "devboxes",
+        "ghcr.io/vicotrbb/devboxes-workspace:test",
+        "devboxes-workspace",
+        "devboxes-workspace",
+        custom_image=profile,
+    )
+    annotations = deployment["metadata"]["annotations"]
+    pod = deployment["spec"]["template"]["spec"]
+    main, sidecar = pod["containers"]
+
+    assert annotations[ANNOTATION_CUSTOM_IMAGE_PROFILE] == "nginx"
+    assert '"mode":"sidecar"' in annotations[ANNOTATION_CUSTOM_IMAGE_CONFIG]
+    assert json.loads(annotations[ANNOTATION_CUSTOM_IMAGE_CONFIG])["resources"] == {
+        "cpuRequest": "25m",
+        "memoryRequest": "32Mi",
+        "cpuLimit": "500m",
+        "memoryLimit": "512Mi",
+    }
+    assert (
+        deployment["spec"]["template"]["metadata"]["annotations"][ANNOTATION_CUSTOM_IMAGE_PROFILE]
+        == "nginx"
+    )
+    assert main["image"] == "ghcr.io/vicotrbb/devboxes-workspace:test"
+    assert sidecar == {
+        "name": "custom-image",
+        "image": "docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine",
+        "imagePullPolicy": "Always",
+        "resources": {
+            "requests": {"cpu": "25m", "memory": "32Mi"},
+            "limits": {"cpu": "500m", "memory": "512Mi"},
+        },
+        "securityContext": {
+            "runAsNonRoot": True,
+            "allowPrivilegeEscalation": False,
+            "capabilities": {"drop": ["ALL"]},
+        },
+        "ports": [{"name": "http", "containerPort": 8080, "protocol": "TCP"}],
+    }
+    assert all(
+        "workspace-secrets" not in mount["name"] for mount in sidecar.get("volumeMounts", [])
+    )
+
+
+def test_custom_workspace_image_replaces_only_the_interactive_container() -> None:
+    profile = CustomImageProfile(
+        name="rust-nightly",
+        displayName="Rust nightly",
+        image="registry.example/devboxes-workspace-rust:nightly",
+        mode="workspace",
+        pullPolicy="Always",
+    )
+    deployment = build_deployment(
+        request(),
+        "devboxes",
+        "ghcr.io/vicotrbb/devboxes-workspace:test",
+        "devboxes-workspace",
+        "devboxes-workspace",
+        custom_image=profile,
+        insights_enabled=True,
+        instance_id="99999999-9999-4999-8999-999999999999",
+        insights_endpoint="http://devboxes:8000",
+        insights_credential="v1.99999999-9999-4999-8999-999999999999.atlas." + "a" * 43,
+    )
+    main, insights = deployment["spec"]["template"]["spec"]["containers"]
+
+    assert main["image"] == "registry.example/devboxes-workspace-rust:nightly"
+    assert main["imagePullPolicy"] == "Always"
+    assert insights["name"] == "insights-agent"
+    assert insights["image"] == "ghcr.io/vicotrbb/devboxes-workspace:test"

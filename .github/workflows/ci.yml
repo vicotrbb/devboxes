@@ -107,6 +107,8 @@ jobs:
           "$(go env GOPATH)/bin/gitleaks" detect --source . --no-git --redact --no-banner
       - name: Helm Insights contracts
         run: scripts/test-helm-insights.sh
+      - name: Helm custom image contracts
+        run: scripts/test-helm-images.sh
       - name: Render LoadBalancer installation
         run: helm template devboxes charts/devboxes --namespace devboxes > /tmp/devboxes.yaml
       - name: Validate Kubernetes resources

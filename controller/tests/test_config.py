@@ -3,7 +3,14 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from devboxes_controller.config import GpuProfile, GpuToleration, Settings
+from devboxes_controller.config import (
+    CustomImagePort,
+    CustomImageProfile,
+    CustomImageResources,
+    GpuProfile,
+    GpuToleration,
+    Settings,
+)
 
 
 def test_access_token_is_required() -> None:
@@ -204,3 +211,106 @@ def test_gpu_profiles_load_from_the_helm_json_environment(monkeypatch: pytest.Mo
     settings = Settings(_env_file=None)
 
     assert settings.resolve_gpu_profile(None).description == "Dedicated inference"
+
+
+def test_custom_image_profiles_are_disabled_by_default_and_resolve_exact_images() -> None:
+    profile = CustomImageProfile(
+        name="nginx",
+        displayName="NGINX preview",
+        image="docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine",
+        ports=[CustomImagePort(name="http", containerPort=8080)],
+    )
+    settings = Settings(
+        access_token="test-access-token-at-least-32-characters",
+        custom_images_enabled=True,
+        custom_images=[profile],
+        _env_file=None,
+    )
+
+    assert settings.resolve_custom_image("nginx") is profile
+    assert settings.resolve_custom_image(profile.image) is profile
+
+    disabled = Settings(
+        access_token="test-access-token-at-least-32-characters",
+        custom_images=[profile],
+        _env_file=None,
+    )
+    with pytest.raises(ValueError, match="disabled by the operator"):
+        disabled.resolve_custom_image("nginx")
+
+
+def test_custom_image_profiles_reject_unsafe_or_ambiguous_contracts() -> None:
+    with pytest.raises(ValidationError, match="container image reference"):
+        CustomImageProfile(
+            name="bad-image",
+            displayName="Bad image",
+            image="https://registry.example/nginx:latest",
+        )
+
+    with pytest.raises(ValidationError, match="duplicate port"):
+        CustomImageProfile(
+            name="duplicate-port",
+            displayName="Duplicate port",
+            image="registry.example/duplicate:1",
+            ports=[
+                CustomImagePort(name="http", containerPort=8080),
+                CustomImagePort(name="https", containerPort=8080),
+            ],
+        )
+
+    with pytest.raises(ValidationError, match="cpuLimit"):
+        CustomImageResources(cpuRequest="1", cpuLimit="500m")
+
+    with pytest.raises(ValidationError, match="greater than or equal to 1024"):
+        CustomImagePort(name="http", containerPort=80)
+
+    with pytest.raises(ValidationError, match="cannot define sidecar resources"):
+        CustomImageProfile(
+            name="workspace-with-resources",
+            displayName="Workspace with resources",
+            image="registry.example/devboxes-workspace:1",
+            mode="workspace",
+            resources=CustomImageResources(),
+        )
+
+    profile = CustomImageProfile(
+        name="nginx",
+        displayName="NGINX",
+        image="registry.example/nginx:1",
+    )
+    with pytest.raises(ValidationError, match="references must be unique"):
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            custom_images=[profile, profile.model_copy(update={"name": "nginx-copy"})],
+            _env_file=None,
+        )
+
+
+def test_custom_image_profiles_load_from_the_helm_json_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVBOXES_ACCESS_TOKEN", "test-access-token-at-least-32-characters")
+    monkeypatch.setenv("DEVBOXES_CUSTOM_IMAGES_ENABLED", "true")
+    monkeypatch.setenv(
+        "DEVBOXES_CUSTOM_IMAGES",
+        json.dumps(
+            [
+                {
+                    "name": "nginx",
+                    "displayName": " NGINX preview ",
+                    "description": " Serve static content ",
+                    "image": "docker.io/nginxinc/nginx-unprivileged:1.27.5-alpine",
+                    "mode": "sidecar",
+                    "ports": [{"name": "http", "containerPort": 8080}],
+                }
+            ]
+        ),
+    )
+
+    settings = Settings(_env_file=None)
+    profile = settings.resolve_custom_image("nginx")
+
+    assert profile.display_name == "NGINX preview"
+    assert profile.description == "Serve static content"
+    assert profile.resources is not None
+    assert profile.ports[0].container_port == 8080

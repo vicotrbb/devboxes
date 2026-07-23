@@ -62,6 +62,8 @@ Do not depend on a cache existing on only one node. Kubernetes may schedule the 
 
 GPU profiles may select a larger derived workspace image. Pre-pull each configured GPU image only on nodes eligible for that profile, and validate host driver compatibility before making the profile the default.
 
+When using custom image profiles, pre-pull each reviewed sidecar image on every node that can host a regular workspace, or use a nearby registry mirror. Keep profile resource envelopes conservative and verify that an application port is reachable over the pod loopback interface. For a workspace-mode profile, apply the same SSH, retained-home, and restart checks as the release workspace image before publishing it.
+
 ## 4. Install and verify the CLI
 
 Use the checksummed release installer, authenticate over HTTPS, and verify the identity returned by the controller.
@@ -101,6 +103,16 @@ devbox create inference --gpu --preset medium --ssh
 ```
 
 CPU and memory presets remain independent from accelerator selection. Start with the smallest preset that satisfies host-side preprocessing and compilation, then measure before increasing it.
+
+When approved custom images are enabled, use a profile rather than a raw registry reference. A service profile is useful for a local application dependency or preview server while the Devboxes workspace remains your SSH entry point:
+
+```bash
+devbox image profiles
+devbox create docs-preview --preset small --image nginx --ssh
+devbox ssh docs-preview -- -L 8080:127.0.0.1:8080
+```
+
+Inspect the profile mode before creation. A sidecar profile can combine with a GPU profile; a workspace profile cannot be paired with a GPU profile that sets its own workspace image. The profile is pinned on the created box, so delete and recreate an intentional test box when you want to verify a catalog revision.
 
 ## 6. Tune in the right order
 

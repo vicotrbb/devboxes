@@ -34,6 +34,8 @@ pub struct CreateDevbox<'a> {
     pub ttl_hours: u16,
     pub repository: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu: Option<GpuRequest<'a>>,
 }
 
@@ -43,6 +45,22 @@ pub struct GpuAllocation {
     pub display_name: String,
     pub resource_name: String,
     pub count: u16,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CustomImagePort {
+    pub name: String,
+    pub container_port: u16,
+    pub protocol: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CustomImageAllocation {
+    pub profile: String,
+    pub display_name: String,
+    pub mode: String,
+    #[serde(default)]
+    pub ports: Vec<CustomImagePort>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -63,6 +81,8 @@ pub struct Devbox {
     pub message: Option<String>,
     #[serde(default)]
     pub gpu: Option<GpuAllocation>,
+    #[serde(default)]
+    pub image: Option<CustomImageAllocation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +104,8 @@ pub struct WhoAmI {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Capabilities {
     pub gpu: GpuCapabilities,
+    #[serde(default)]
+    pub images: CustomImageCapabilities,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -91,6 +113,22 @@ pub struct GpuCapabilities {
     pub enabled: bool,
     pub default_profile: Option<String>,
     pub profiles: Vec<GpuProfileSummary>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct CustomImageCapabilities {
+    pub enabled: bool,
+    pub profiles: Vec<CustomImageProfileSummary>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CustomImageProfileSummary {
+    pub name: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub mode: String,
+    #[serde(default)]
+    pub ports: Vec<CustomImagePort>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -265,6 +303,7 @@ mod tests {
             preset: Preset::Medium,
             ttl_hours: 24,
             repository: None,
+            image: None,
             gpu: None,
         };
 
@@ -286,6 +325,7 @@ mod tests {
             preset: Preset::Small,
             ttl_hours: 24,
             repository: None,
+            image: None,
             gpu: Some(GpuRequest { profile: None }),
         };
         let named_gpu = CreateDevbox {
@@ -293,6 +333,7 @@ mod tests {
             preset: Preset::Large,
             ttl_hours: 72,
             repository: None,
+            image: None,
             gpu: Some(GpuRequest {
                 profile: Some("nvidia-l4"),
             }),
@@ -302,6 +343,23 @@ mod tests {
         assert_eq!(
             serde_json::to_value(named_gpu).unwrap()["gpu"],
             json!({"profile": "nvidia-l4"})
+        );
+    }
+
+    #[test]
+    fn create_payload_includes_an_explicit_image_selector() {
+        let payload = CreateDevbox {
+            name: "nginx",
+            preset: Preset::Small,
+            ttl_hours: 24,
+            repository: None,
+            image: Some("docker.io/library/nginx:1.27"),
+            gpu: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(payload).unwrap()["image"],
+            json!("docker.io/library/nginx:1.27")
         );
     }
 

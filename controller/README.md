@@ -13,4 +13,4 @@ uv run pytest
 
 For local development, set `DEVBOXES_KUBECONFIG_CONTEXT` to a disposable Kubernetes context and provide a non-production `DEVBOXES_ACCESS_TOKEN`.
 
-See the [API reference](../docs/api.md), [architecture](../docs/architecture.md), [GPU acceleration](../docs/gpu.md), and [operations runbook](../docs/operations.md) for supported behavior and deployment guidance.
+See the [API reference](../docs/api.md), [architecture](../docs/architecture.md), [GPU acceleration](../docs/gpu.md), [custom image profiles](../docs/images.md), and [operations runbook](../docs/operations.md) for supported behavior and deployment guidance.
