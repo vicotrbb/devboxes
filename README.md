@@ -88,7 +88,7 @@ kubectl -n devboxes create secret generic devboxes-workspace \
   --from-file=SSH_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub"
 
 helm install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
-  --version 0.5.0 \
+  --version 0.5.1 \
   --namespace devboxes
 ```
 
