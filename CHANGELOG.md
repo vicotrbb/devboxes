@@ -4,6 +4,21 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-27
+
+### Changed
+
+- Updated the controller and workspace images to uv 0.11.32; the CLI to Rand 0.10, SHA-2 0.11, anyhow 1.0.104, Clap 4.6.4, and serde_json 1.0.151; and controller type checking to mypy 2.3.
+- Updated ESLint to 10.8.0, globals to 17.8.0, markdownlint-cli2 to 0.23.2, Prettier to 3.9.6, and the pinned checkout, setup-node, setup-python, login, and artifact-attestation GitHub Actions.
+
+### Fixed
+
+- Adapted OAuth PKCE verifier generation to Rand 0.10's `Rng` trait while preserving cryptographically secure thread-local entropy and the existing verifier/challenge contract.
+
+### Security
+
+- Updated the development documentation toolchain to patched js-yaml 5.2.2 and brace-expansion 5.0.8 releases, resolving the current high-severity parsing and unbounded-expansion advisories.
+
 ## [0.5.0] - 2026-07-23
 
 ### Added
@@ -130,7 +145,8 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 - Portable Helm chart with values schema, namespace-scoped RBAC, configurable storage, ingress, LoadBalancer or NodePort SSH, ServiceMonitor, and disruption budget.
 - macOS and Linux CLI releases, SHA-256 verification installer, GHCR images, OCI chart publishing, image provenance attestations, and clean Kind install CI.
 
-[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/vicotrbb/devboxes/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/vicotrbb/devboxes/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/vicotrbb/devboxes/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/vicotrbb/devboxes/compare/v0.2.1...v0.3.0
