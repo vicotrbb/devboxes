@@ -26,6 +26,7 @@ def provider_fixture(name: str) -> tuple[dict[str, object], int]:
 def ingest(
     store: InsightsStore,
     *,
+    tenant: str = "default",
     instance_id: str,
     box: str,
     batch_id: str,
@@ -36,6 +37,7 @@ def ingest(
 ):
     return asyncio.run(
         store.ingest(
+            tenant_id=tenant,
             instance_id=instance_id,
             box_name=box,
             batch_id=batch_id,
@@ -83,7 +85,7 @@ def test_store_migrates_readies_and_creates_an_online_backup(tmp_path: Path) -> 
     asyncio.run(store.backup(backup))
     assert backup.exists()
     with closing(sqlite3.connect(backup)) as copy:
-        assert copy.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 1
+        assert copy.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
 
 
 def test_database_size_tolerates_a_disappearing_sqlite_auxiliary_file(
@@ -126,7 +128,7 @@ def test_store_migrates_a_previous_empty_schema_transactionally(tmp_path: Path) 
 
     assert asyncio.run(store.ready()) is True
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 1
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
         assert (
             connection.execute(
                 "SELECT COUNT(*) FROM sqlite_master "
@@ -492,3 +494,117 @@ def test_store_rolls_back_invalid_batch_kinds_and_timestamps(tmp_path: Path) -> 
 def test_uninitialized_store_is_not_ready(tmp_path: Path) -> None:
     store = InsightsStore(tmp_path / "missing" / "insights.db")
     assert asyncio.run(store.ready()) is False
+
+
+def test_store_isolates_queries_purges_and_sqlite_exports_by_tenant(
+    tmp_path: Path,
+) -> None:
+    store = InsightsStore(tmp_path / "insights.db")
+    asyncio.run(store.initialize())
+    claude, points = provider_fixture("claude-2.1.205-otlp.json")
+    platform_instance = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    research_instance = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    ingest(
+        store,
+        tenant="platform",
+        instance_id=platform_instance,
+        box="atlas",
+        batch_id="c" * 64,
+        collector="otel",
+        kind="otlp",
+        payload=claude,
+        points=points,
+    )
+    ingest(
+        store,
+        tenant="research",
+        instance_id=research_instance,
+        box="atlas",
+        batch_id="d" * 64,
+        collector="otel",
+        kind="otlp",
+        payload=claude,
+        points=points,
+    )
+
+    platform = asyncio.run(
+        store.summary(
+            QueryFilters(
+                since=RANGE.since,
+                until=RANGE.until,
+                tenant_id="platform",
+            )
+        )
+    )
+    research = asyncio.run(
+        store.summary(
+            QueryFilters(
+                since=RANGE.since,
+                until=RANGE.until,
+                tenant_id="research",
+            )
+        )
+    )
+    missing = asyncio.run(
+        store.summary(
+            QueryFilters(
+                since=RANGE.since,
+                until=RANGE.until,
+                tenant_id="missing",
+            )
+        )
+    )
+    assert platform["ai"]["totals"]["tokens"] == 15
+    assert research["ai"]["totals"]["tokens"] == 15
+    assert missing["ai"]["totals"]["tokens"] == 0
+
+    export = tmp_path / "platform.db"
+    asyncio.run(store.backup(export, "platform"))
+    with closing(sqlite3.connect(export)) as connection:
+        assert connection.execute("SELECT tenant_id, id FROM devbox_instances").fetchall() == [
+            ("platform", platform_instance)
+        ]
+
+    assert asyncio.run(store.purge_box("atlas", "platform")) == 1
+    with closing(sqlite3.connect(store.path)) as connection:
+        assert connection.execute(
+            "SELECT tenant_id, id FROM devbox_instances ORDER BY tenant_id"
+        ).fetchall() == [("research", research_instance)]
+
+
+def test_store_migrates_legacy_instances_into_the_configured_default_tenant(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "legacy.db"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            CREATE TABLE devbox_instances (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            INSERT INTO schema_migrations VALUES (1, '2026-01-01T00:00:00Z');
+            INSERT INTO devbox_instances VALUES (
+                'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                'atlas',
+                '2026-01-01T00:00:00Z',
+                '2026-01-01T00:00:00Z',
+                NULL
+            );
+            """
+        )
+    store = InsightsStore(database, default_tenant_id="platform")
+
+    asyncio.run(store.initialize())
+
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT tenant_id FROM devbox_instances").fetchone() == (
+            "platform",
+        )

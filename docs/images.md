@@ -105,7 +105,12 @@ A workspace profile can combine with a GPU profile only when that GPU profile do
 
 ## Security and operations
 
-Custom image profiles are appropriate only for Devboxes' existing trusted single-operator model. The operator chooses and reviews every image, resource envelope, pull policy, and port declaration. Users can select a profile but cannot inject a registry, command, Service, volume, host path, capability, resource request, or Kubernetes scheduling field.
+Custom image profiles are appropriate only for trusted operators and tenant members. The
+operator chooses and reviews every image, resource envelope, pull policy, and port
+declaration. A tenant sees only profiles in the intersection of the installation catalog and
+its `allowedImageProfiles`; an empty tenant allowlist exposes none. Users can select an
+available profile but cannot inject a registry, command, Service, volume, host path,
+capability, resource request, or Kubernetes scheduling field.
 
 Treat every catalog image as part of the trusted software supply chain:
 

@@ -12,11 +12,14 @@ use serde::{Deserialize, Serialize};
 pub struct StoredConfig {
     pub url: Option<String>,
     pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
 }
 
 pub struct ResolvedConfig {
     pub url: String,
     pub token: String,
+    pub tenant: Option<String>,
     pub server_alias: String,
 }
 
@@ -31,7 +34,12 @@ impl StoredConfig {
         toml::from_str(&contents).with_context(|| format!("invalid config at {}", path.display()))
     }
 
-    pub fn resolve(self, url: Option<String>, token: Option<String>) -> Result<ResolvedConfig> {
+    pub fn resolve_with_tenant(
+        self,
+        url: Option<String>,
+        token: Option<String>,
+        tenant: Option<String>,
+    ) -> Result<ResolvedConfig> {
         let resolved_url = self.resolve_url(url)?;
         let token = token
             .or_else(|| std::env::var("DEVBOX_TOKEN").ok())
@@ -40,11 +48,18 @@ impl StoredConfig {
             .ok_or_else(|| {
                 anyhow::anyhow!("not logged in; run `devbox login` or set DEVBOX_TOKEN")
             })?;
+        let tenant = tenant
+            .or_else(|| std::env::var("DEVBOX_TENANT").ok())
+            .or(self.tenant)
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| normalize_tenant(&value))
+            .transpose()?;
         let parsed = Url::parse(&resolved_url).context("invalid Devboxes API URL")?;
         let server_alias = server_alias(&parsed);
         Ok(ResolvedConfig {
             url: resolved_url,
             token,
+            tenant,
             server_alias,
         })
     }
@@ -74,7 +89,7 @@ impl StoredConfig {
         Ok(url.trim_end_matches('/').to_owned())
     }
 
-    pub fn save(url: &str, token: &str) -> Result<PathBuf> {
+    pub fn save_with_tenant(url: &str, token: &str, tenant: Option<&str>) -> Result<PathBuf> {
         let path = config_path()?;
         let parent = path.parent().context("config path has no parent")?;
         fs::create_dir_all(parent)
@@ -82,6 +97,7 @@ impl StoredConfig {
         let content = toml::to_string_pretty(&Self {
             url: Some(url.trim_end_matches('/').to_owned()),
             token: Some(token.to_owned()),
+            tenant: tenant.map(str::to_owned),
         })?;
 
         let mut options = fs::OpenOptions::new();
@@ -95,6 +111,29 @@ impl StoredConfig {
         #[cfg(unix)]
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
         Ok(path)
+    }
+}
+
+fn normalize_tenant(value: &str) -> Result<String> {
+    let value = value.trim().to_ascii_lowercase();
+    let valid_length = (1..=40).contains(&value.len());
+    let valid_edges = value
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+        && value
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric);
+    let valid_characters = value.bytes().all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == b'-'
+    });
+    if valid_length && valid_edges && valid_characters {
+        Ok(value)
+    } else {
+        bail!(
+            "invalid tenant ID; use 1-40 lowercase letters, digits, or hyphens and start and end alphanumeric"
+        )
     }
 }
 
@@ -135,26 +174,30 @@ mod tests {
         let config = StoredConfig {
             url: Some("http://devboxes.example.com".to_owned()),
             token: Some("secret".to_owned()),
+            tenant: None,
         };
-        assert!(config.resolve(None, None).is_err());
+        assert!(config.resolve_with_tenant(None, None, None).is_err());
 
         let lookalike = StoredConfig {
             url: Some("http://localhost.example.com".to_owned()),
             token: Some("secret".to_owned()),
+            tenant: None,
         };
-        assert!(lookalike.resolve(None, None).is_err());
+        assert!(lookalike.resolve_with_tenant(None, None, None).is_err());
 
         let local = StoredConfig {
             url: Some("http://localhost:8000".to_owned()),
             token: Some("secret".to_owned()),
+            tenant: None,
         };
-        assert!(local.resolve(None, None).is_ok());
+        assert!(local.resolve_with_tenant(None, None, None).is_ok());
 
         let loopback = StoredConfig {
             url: Some("http://127.0.0.1:8000".to_owned()),
             token: Some("secret".to_owned()),
+            tenant: None,
         };
-        assert!(loopback.resolve(None, None).is_ok());
+        assert!(loopback.resolve_with_tenant(None, None, None).is_ok());
     }
 
     #[test]
@@ -162,9 +205,10 @@ mod tests {
         let config = StoredConfig {
             url: None,
             token: Some("secret".to_owned()),
+            tenant: None,
         };
 
-        assert!(config.resolve(None, None).is_err());
+        assert!(config.resolve_with_tenant(None, None, None).is_err());
     }
 
     #[test]
@@ -172,14 +216,16 @@ mod tests {
         let first = StoredConfig {
             url: Some("https://devboxes-one.example.com".to_owned()),
             token: Some("secret".to_owned()),
+            tenant: None,
         }
-        .resolve(None, None)
+        .resolve_with_tenant(None, None, None)
         .unwrap();
         let second = StoredConfig {
             url: Some("https://devboxes-two.example.com".to_owned()),
             token: Some("secret".to_owned()),
+            tenant: None,
         }
-        .resolve(None, None)
+        .resolve_with_tenant(None, None, None)
         .unwrap();
 
         assert_ne!(first.server_alias, second.server_alias);
@@ -194,9 +240,32 @@ mod tests {
             let config = StoredConfig {
                 url: Some(url.to_owned()),
                 token: Some("secret".to_owned()),
+                tenant: None,
             };
-            assert!(config.resolve(None, None).is_err());
+            assert!(config.resolve_with_tenant(None, None, None).is_err());
         }
+    }
+
+    #[test]
+    fn tenant_selection_is_normalized_and_validated() {
+        let selected = StoredConfig {
+            url: Some("https://devboxes.example.com".to_owned()),
+            token: Some("secret".to_owned()),
+            tenant: Some("platform".to_owned()),
+        }
+        .resolve_with_tenant(None, None, Some(" Research ".to_owned()))
+        .unwrap();
+
+        assert_eq!(selected.tenant.as_deref(), Some("research"));
+        assert!(
+            StoredConfig {
+                url: Some("https://devboxes.example.com".to_owned()),
+                token: Some("secret".to_owned()),
+                tenant: None,
+            }
+            .resolve_with_tenant(None, None, Some("../other".to_owned()))
+            .is_err()
+        );
     }
 
     #[test]

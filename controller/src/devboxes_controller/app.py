@@ -47,7 +47,12 @@ from .insights_service import (
     record_insights_rejection,
 )
 from .insights_store import QueryFilters
-from .manager import DevboxConflictError, DevboxManager, DevboxNotFoundError
+from .manager import (
+    DevboxConflictError,
+    DevboxManager,
+    DevboxNotFoundError,
+    TenantQuotaExceededError,
+)
 from .models import (
     Capabilities,
     CliTokenRequest,
@@ -61,6 +66,9 @@ from .models import (
     DevboxList,
     GpuCapabilities,
     GpuProfileSummary,
+    Preset,
+    TenancyCapabilities,
+    TenantSummary,
     WhoAmI,
 )
 from .resources import PRESETS
@@ -78,12 +86,29 @@ DevboxName = Annotated[
 ]
 
 
-def _capabilities(settings: Settings) -> Capabilities:
+def _tenant_summaries(auth: AuthContext) -> list[TenantSummary]:
+    """Build the tenant switcher contract available to the current identity."""
+    return [
+        TenantSummary(
+            id=tenant.id,
+            display_name=tenant.display_name,
+            role=tenant.role.value,
+        )
+        for tenant in auth.tenants
+    ]
+
+
+def _capabilities(settings: Settings, auth: AuthContext) -> Capabilities:
     """Build the safe installation feature contract exposed to clients."""
+    tenant = auth.tenant
+    gpu_profiles = settings.tenant_gpu_profiles(tenant)
+    default_gpu_profile = settings.tenant_default_gpu_profile(tenant)
+    image_profiles = settings.tenant_custom_images(tenant)
+    tenant_summaries = _tenant_summaries(auth)
     return Capabilities(
         gpu=GpuCapabilities(
-            enabled=settings.gpu_enabled,
-            default_profile=settings.gpu_default_profile if settings.gpu_enabled else None,
+            enabled=bool(gpu_profiles),
+            default_profile=default_gpu_profile,
             profiles=[
                 GpuProfileSummary(
                     name=profile.name,
@@ -91,14 +116,13 @@ def _capabilities(settings: Settings) -> Capabilities:
                     description=profile.description,
                     resource_name=profile.resource_name,
                     count=profile.count,
-                    default=profile.name == settings.gpu_default_profile,
+                    default=profile.name == default_gpu_profile,
                 )
-                for profile in settings.gpu_profiles
-                if settings.gpu_enabled
+                for profile in gpu_profiles
             ],
         ),
         images=CustomImageCapabilities(
-            enabled=settings.custom_images_enabled,
+            enabled=bool(image_profiles),
             profiles=[
                 CustomImageProfileSummary(
                     name=profile.name,
@@ -114,9 +138,24 @@ def _capabilities(settings: Settings) -> Capabilities:
                         for port in profile.ports
                     ],
                 )
-                for profile in settings.custom_images
-                if settings.custom_images_enabled
+                for profile in image_profiles
             ],
+        ),
+        tenancy=TenancyCapabilities(
+            enabled=settings.multi_tenancy_enabled,
+            current=TenantSummary(
+                id=tenant.id,
+                display_name=tenant.display_name,
+                role=auth.role.value,
+            ),
+            tenants=tenant_summaries,
+            max_ttl_hours=settings.tenant_max_ttl_hours(tenant),
+            allowed_presets=list(tenant.allowed_presets),
+            resource_quota=(
+                tenant.resource_quota.hard
+                if tenant.resource_quota is not None and tenant.resource_quota.enabled
+                else {}
+            ),
         ),
     )
 
@@ -136,7 +175,6 @@ def create_app(
         maximum_codes=settings.authorization_code_store_size,
     )
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
-    capabilities = _capabilities(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -216,7 +254,10 @@ def create_app(
 
     @app.get("/metrics", include_in_schema=False)
     async def metrics() -> Response:
-        boxes = await manager.list()
+        tenant_boxes = await asyncio.gather(
+            *[manager.list(tenant) for tenant in settings.tenant_configs]
+        )
+        boxes = [box for items in tenant_boxes for box in items]
         counts = dict.fromkeys(("starting", "ready", "stopped", "degraded"), 0)
         for box in boxes:
             counts[box.state.value] += 1
@@ -251,7 +292,8 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid return path"
             )
-        if not authenticator.validate_access_token(token):
+        identity = authenticator.authenticate_access_token(token)
+        if identity is None:
             return templates.TemplateResponse(
                 request,
                 "login.html",
@@ -262,7 +304,7 @@ def create_app(
                 },
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
-        session, csrf = authenticator.issue_session()
+        session, csrf = authenticator.issue_session(identity.subject)
         response = RedirectResponse(next_target, status_code=status.HTTP_303_SEE_OTHER)
         response.set_cookie(
             SESSION_COOKIE,
@@ -410,27 +452,40 @@ def create_app(
         return response
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-    async def dashboard(request: Request) -> Response:
-        if not authenticator.browser_session_valid(request):
+    async def dashboard(
+        request: Request,
+        tenant_id: Annotated[str | None, Query(alias="tenant", max_length=40)] = None,
+    ) -> Response:
+        auth = authenticator.browser_context(request, tenant_id)
+        if auth is None:
             return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+        capabilities = _capabilities(settings, auth)
+        maximum_ttl = settings.tenant_max_ttl_hours(auth.tenant)
         return templates.TemplateResponse(
             request,
             "index.html",
             {
-                "default_ttl_hours": settings.default_ttl_hours,
-                "max_ttl_hours": settings.max_ttl_hours,
+                "default_ttl_hours": min(settings.default_ttl_hours, maximum_ttl),
+                "max_ttl_hours": maximum_ttl,
                 "cluster_name": settings.cluster_name,
-                "storage_class": settings.storage_class or "cluster default",
+                "storage_class": (settings.tenant_storage_class(auth.tenant) or "cluster default"),
                 "workspace_service_type": settings.workspace_service_type,
                 "gpu": capabilities.gpu,
                 "images": capabilities.images,
+                "tenancy": capabilities.tenancy,
+                "can_manage": auth.can_manage,
+                "can_purge": auth.can_purge,
                 "version": __version__,
             },
         )
 
     @app.get("/insights", response_class=HTMLResponse, include_in_schema=False)
-    async def insights_dashboard(request: Request) -> Response:
-        if not authenticator.browser_session_valid(request):
+    async def insights_dashboard(
+        request: Request,
+        tenant_id: Annotated[str | None, Query(alias="tenant", max_length=40)] = None,
+    ) -> Response:
+        auth = authenticator.browser_context(request, tenant_id)
+        if auth is None:
             return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
         return templates.TemplateResponse(
             request,
@@ -438,23 +493,43 @@ def create_app(
             {
                 "cluster_name": settings.cluster_name,
                 "insights_enabled": insights.enabled,
+                "tenancy": _capabilities(settings, auth).tenancy,
+                "can_purge": auth.can_purge,
                 "version": __version__,
             },
         )
 
     @app.get("/docs", response_class=HTMLResponse, include_in_schema=False)
-    async def documentation(request: Request) -> Response:
-        if not authenticator.browser_session_valid(request):
+    async def documentation(
+        request: Request,
+        tenant_id: Annotated[str | None, Query(alias="tenant", max_length=40)] = None,
+    ) -> Response:
+        auth = authenticator.browser_context(request, tenant_id)
+        if auth is None:
             return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+        capabilities = _capabilities(settings, auth)
+        configured_presets = set(auth.tenant.allowed_presets)
+        allowed_presets = [preset for preset in PRESETS if preset in configured_presets]
+        maximum_ttl = settings.tenant_max_ttl_hours(auth.tenant)
+        default_preset = Preset.MEDIUM if Preset.MEDIUM in allowed_presets else allowed_presets[0]
         return templates.TemplateResponse(
             request,
             "docs.html",
             {
-                "default_ttl_hours": settings.default_ttl_hours,
-                "max_ttl_hours": settings.max_ttl_hours,
+                "default_ttl_hours": min(
+                    settings.default_ttl_hours,
+                    maximum_ttl,
+                ),
+                "max_ttl_hours": maximum_ttl,
+                "example_ttl_hours": min(72, maximum_ttl),
+                "default_preset": default_preset.value,
+                "smallest_preset": allowed_presets[0].value,
+                "largest_preset": allowed_presets[-1].value,
+                "allowed_presets": [preset.value for preset in allowed_presets],
                 "external_url": settings.external_url,
-                "namespace": settings.namespace,
-                "storage_class": settings.storage_class or "cluster default",
+                "namespace": auth.tenant.namespace,
+                "controller_namespace": settings.namespace,
+                "storage_class": (settings.tenant_storage_class(auth.tenant) or "cluster default"),
                 "workspace_service_type": settings.workspace_service_type,
                 "cluster_name": settings.cluster_name,
                 "presets": [
@@ -466,35 +541,47 @@ def create_app(
                         "storage": resources["storage"],
                     }
                     for preset, resources in PRESETS.items()
+                    if preset in allowed_presets
                 ],
                 "insights_enabled": insights.enabled,
                 "gpu": capabilities.gpu,
                 "images": capabilities.images,
+                "tenancy": capabilities.tenancy,
                 "version": __version__,
             },
         )
 
     @app.get("/api/v1/whoami", tags=["auth"])
     async def whoami(auth: Auth) -> WhoAmI:
-        return WhoAmI(user=auth.subject, mode=auth.mode)
+        return WhoAmI(
+            user=auth.display_name,
+            subject=auth.subject,
+            mode=auth.mode,
+            tenant=auth.tenant.id,
+            role=auth.role.value,
+            tenants=_tenant_summaries(auth),
+        )
 
     @app.get("/api/v1/capabilities", tags=["system"])
-    async def installation_capabilities(_: Auth) -> Capabilities:
-        return capabilities
+    async def installation_capabilities(auth: Auth) -> Capabilities:
+        return _capabilities(settings, auth)
 
     @app.get("/api/v1/devboxes", tags=["devboxes"])
-    async def list_devboxes(_: Auth) -> DevboxList:
-        return DevboxList(items=await manager.list())
+    async def list_devboxes(auth: Auth) -> DevboxList:
+        return DevboxList(items=await manager.list(auth.tenant))
 
     @app.post(
         "/api/v1/devboxes",
         status_code=status.HTTP_201_CREATED,
         tags=["devboxes"],
     )
-    async def create_devbox(payload: CreateDevboxRequest, _: Auth) -> Devbox:
+    async def create_devbox(payload: CreateDevboxRequest, auth: Auth) -> Devbox:
+        _require_manage(auth)
         try:
-            return await manager.create(payload)
+            return await manager.create(payload, auth.tenant, auth.subject)
         except DevboxConflictError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        except TenantQuotaExceededError as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(
@@ -502,24 +589,32 @@ def create_app(
             ) from error
 
     @app.get("/api/v1/devboxes/{name}", tags=["devboxes"])
-    async def get_devbox(name: DevboxName, _: Auth) -> Devbox:
-        return await _not_found(manager.get(name), name)
+    async def get_devbox(name: DevboxName, auth: Auth) -> Devbox:
+        return await _not_found(manager.get(name, auth.tenant), name)
 
     @app.post("/api/v1/devboxes/{name}/start", tags=["devboxes"])
-    async def start_devbox(name: DevboxName, _: Auth) -> Devbox:
-        return await _not_found(manager.scale(name, 1), name)
+    async def start_devbox(name: DevboxName, auth: Auth) -> Devbox:
+        _require_manage(auth)
+        try:
+            return await _not_found(manager.scale(name, 1, auth.tenant), name)
+        except TenantQuotaExceededError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     @app.post("/api/v1/devboxes/{name}/stop", tags=["devboxes"])
-    async def stop_devbox(name: DevboxName, _: Auth) -> Devbox:
-        return await _not_found(manager.scale(name, 0), name)
+    async def stop_devbox(name: DevboxName, auth: Auth) -> Devbox:
+        _require_manage(auth)
+        return await _not_found(manager.scale(name, 0, auth.tenant), name)
 
     @app.delete("/api/v1/devboxes/{name}", tags=["devboxes"])
     async def delete_devbox(
         name: DevboxName,
-        _: Auth,
+        auth: Auth,
         purge: Annotated[bool, Query()] = False,
     ) -> DeleteResult:
-        return await _not_found(manager.delete(name, purge), name)
+        _require_manage(auth)
+        if purge:
+            _require_purge(auth)
+        return await _not_found(manager.delete(name, purge, auth.tenant), name)
 
     @app.post("/internal/v1/insights/batches", include_in_schema=False)
     async def ingest_insights_batch(request: Request) -> dict[str, Any]:
@@ -545,10 +640,11 @@ def create_app(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 detail="Insights batches must use application/json",
             )
-        instance_id, box_name = scope
+        tenant_id, instance_id, box_name = scope
         try:
             body = await _read_limited_body(request, settings.insights_max_compressed_bytes)
             return await insights.ingest(
+                tenant_id=tenant_id,
                 instance_id=instance_id,
                 box_name=box_name,
                 compressed_body=body,
@@ -574,7 +670,7 @@ def create_app(
 
     @app.get("/api/v1/insights/summary", tags=["insights"])
     async def insights_summary(
-        _: Auth,
+        auth: Auth,
         since: Annotated[str, Query(min_length=2, max_length=64)] = "7d",
         until: Annotated[str | None, Query(max_length=64)] = None,
         box: Annotated[str | None, Query(max_length=40)] = None,
@@ -593,6 +689,7 @@ def create_app(
             return insights.disabled_envelope()
         filters = _insights_filters(
             insights,
+            auth.tenant.id,
             since,
             until,
             _query_alias(box, devbox, "box", "devbox"),
@@ -607,7 +704,7 @@ def create_app(
 
     @app.get("/api/v1/insights/timeseries", tags=["insights"])
     async def insights_timeseries(
-        _: Auth,
+        auth: Auth,
         metric: Annotated[str, Query(max_length=32)],
         since: Annotated[str, Query(min_length=2, max_length=64)] = "7d",
         until: Annotated[str | None, Query(max_length=64)] = None,
@@ -624,6 +721,7 @@ def create_app(
             return insights.disabled_envelope()
         filters = _insights_filters(
             insights,
+            auth.tenant.id,
             since,
             until,
             _query_alias(box, devbox, "box", "devbox"),
@@ -648,7 +746,7 @@ def create_app(
 
     @app.get("/api/v1/insights/activity", tags=["insights"])
     async def insights_activity(
-        _: Auth,
+        auth: Auth,
         since: Annotated[str, Query(min_length=2, max_length=64)] = "7d",
         until: Annotated[str | None, Query(max_length=64)] = None,
         box: Annotated[str | None, Query(max_length=40)] = None,
@@ -665,6 +763,7 @@ def create_app(
             return insights.disabled_envelope()
         filters = _insights_filters(
             insights,
+            auth.tenant.id,
             since,
             until,
             _query_alias(box, devbox, "box", "devbox"),
@@ -688,7 +787,7 @@ def create_app(
 
     @app.get("/api/v1/insights/capabilities", tags=["insights"])
     async def insights_capabilities(
-        _: Auth,
+        auth: Auth,
         since: Annotated[str, Query(min_length=2, max_length=64)] = "7d",
         until: Annotated[str | None, Query(max_length=64)] = None,
         box: Annotated[str | None, Query(max_length=40)] = None,
@@ -707,6 +806,7 @@ def create_app(
             return insights.disabled_envelope()
         filters = _insights_filters(
             insights,
+            auth.tenant.id,
             since,
             until,
             _query_alias(box, devbox, "box", "devbox"),
@@ -721,7 +821,7 @@ def create_app(
 
     @app.get("/api/v1/insights/export", tags=["insights"])
     async def insights_export(
-        _: Auth,
+        auth: Auth,
         format: Annotated[str, Query(pattern="^(json|csv|sqlite)$")] = "json",
         since: Annotated[str, Query(min_length=2, max_length=64)] = "30d",
         until: Annotated[str | None, Query(max_length=64)] = None,
@@ -744,6 +844,7 @@ def create_app(
             )
         filters = _insights_filters(
             insights,
+            auth.tenant.id,
             since,
             until,
             _query_alias(box, devbox, "box", "devbox"),
@@ -762,7 +863,7 @@ def create_app(
             )
             os.close(descriptor)
             try:
-                await insights.backup(backup_path)
+                await insights.backup(backup_path, auth.tenant.id)
             except (OSError, sqlite3.Error):
                 await asyncio.to_thread(Path(backup_path).unlink, missing_ok=True)
                 raise
@@ -791,11 +892,12 @@ def create_app(
 
     @app.delete("/api/v1/insights", tags=["insights"])
     async def purge_insights_query(
-        _: Auth,
+        auth: Auth,
         instance_id: Annotated[str | None, Query(max_length=36)] = None,
         box: Annotated[str | None, Query(max_length=40)] = None,
         devbox: Annotated[str | None, Query(max_length=40)] = None,
     ) -> dict[str, Any]:
+        _require_purge(auth)
         if not insights.enabled:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -803,7 +905,11 @@ def create_app(
             )
         selected_box = _query_alias(box, devbox, "box", "devbox")
         try:
-            return await insights.purge(selected_box, instance_id=instance_id)
+            return await insights.purge(
+                selected_box,
+                instance_id=instance_id,
+                tenant_id=auth.tenant.id,
+            )
         except ValueError as error:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -811,13 +917,14 @@ def create_app(
             ) from error
 
     @app.delete("/api/v1/insights/devboxes/{name}", tags=["insights"])
-    async def purge_insights_compatibility(name: DevboxName, _: Auth) -> dict[str, Any]:
+    async def purge_insights_compatibility(name: DevboxName, auth: Auth) -> dict[str, Any]:
+        _require_purge(auth)
         if not insights.enabled:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Insights is disabled",
             )
-        return await insights.purge(box_name=name)
+        return await insights.purge(box_name=name, tenant_id=auth.tenant.id)
 
     return app
 
@@ -829,8 +936,9 @@ async def _with_workspace_insights(
 ) -> dict[str, Any]:
     """Merge Kubernetes rollout state into collector coverage without blocking queries."""
     try:
-        boxes = await manager.list()
-    except (ApiException, OSError):
+        tenant = manager.settings.resolve_tenant(filters.tenant_id)
+        boxes = await manager.list(tenant)
+    except (ApiException, OSError, ValueError):
         return envelope
     collectors = list(envelope.get("coverage", {}).get("collectors", []))
     represented = {str(item.get("box")) for item in collectors}
@@ -888,6 +996,24 @@ async def _not_found[T](awaitable: Awaitable[T], name: str) -> T:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Devbox {name!r} was not found",
         ) from error
+
+
+def _require_manage(auth: AuthContext) -> None:
+    """Require a role allowed to mutate ordinary tenant resources."""
+    if not auth.can_manage:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The current tenant role is read-only",
+        )
+
+
+def _require_purge(auth: AuthContext) -> None:
+    """Require an administrative role for irreversible tenant data deletion."""
+    if not auth.can_purge:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The current tenant role cannot purge persistent data",
+        )
 
 
 def _append_redirect_query(redirect_uri: str, values: dict[str, str]) -> str:
@@ -948,6 +1074,7 @@ async def _read_limited_body(request: Request, maximum: int) -> bytes:
 
 def _insights_filters(
     insights: InsightsService,
+    tenant_id: str,
     since: str,
     until: str | None,
     box: str | None,
@@ -962,6 +1089,7 @@ def _insights_filters(
 ) -> QueryFilters:
     try:
         return insights.filters(
+            tenant_id=tenant_id,
             since=since,
             until=until,
             box=box,

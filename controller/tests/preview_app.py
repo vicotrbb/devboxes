@@ -1,7 +1,8 @@
 from devboxes_controller.app import create_app
 from devboxes_controller.config import CustomImagePort, CustomImageProfile, GpuProfile, Settings
+from devboxes_controller.models import DevboxState, Preset
 
-from .fakes import FakeManager
+from .fakes import FakeManager, sample_devbox
 
 settings = Settings(
     access_token="preview-access-token-at-least-32-characters",
@@ -36,5 +37,45 @@ settings = Settings(
             ports=[CustomImagePort(name="http", containerPort=8080)],
         )
     ],
+    multi_tenancy_enabled=True,
+    default_tenant="platform",
+    tenants=[
+        {
+            "id": "platform",
+            "displayName": "Platform Engineering",
+            "namespace": "devboxes",
+            "allowedPresets": ["small", "medium"],
+            "allowedGpuProfiles": ["nvidia-l4"],
+            "allowedImageProfiles": ["nginx"],
+            "resourceQuota": {
+                "enabled": True,
+                "hard": {
+                    "requests.cpu": "8",
+                    "requests.memory": "32Gi",
+                },
+            },
+        },
+        {
+            "id": "research",
+            "displayName": "Research",
+            "namespace": "devboxes-research",
+            "allowedPresets": ["medium", "large"],
+            "allowedGpuProfiles": ["nvidia-shared"],
+            "allowedImageProfiles": [],
+            "maxTtlHours": 72,
+        },
+    ],
 )
-app = create_app(settings, FakeManager())  # type: ignore[arg-type]
+manager = FakeManager(settings)
+manager.boxes.extend(
+    [
+        sample_devbox("simulation", preset=Preset.LARGE, tenant="research"),
+        sample_devbox(
+            "notebook",
+            state=DevboxState.STOPPED,
+            preset=Preset.MEDIUM,
+            tenant="research",
+        ),
+    ]
+)
+app = create_app(settings, manager)  # type: ignore[arg-type]

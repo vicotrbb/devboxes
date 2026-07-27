@@ -1,0 +1,12 @@
+{% if tenancy.enabled %}
+<label class="tenant-switcher" for="tenant-switcher">
+  <span>Tenant</span>
+  <select id="tenant-switcher" aria-label="Current tenant">
+    {% for tenant in tenancy.tenants %}
+    <option value="{{ tenant.id }}"{% if tenant.id == tenancy.current.id %} selected{% endif %}>
+      {{ tenant.display_name }} · {{ tenant.role }}
+    </option>
+    {% endfor %}
+  </select>
+</label>
+{% endif %}

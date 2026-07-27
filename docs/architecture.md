@@ -2,14 +2,15 @@
 
 Devboxes is a namespaced Kubernetes application with three independently consumable parts: the controller and dashboard image, the workspace image, and the Rust CLI.
 
-## Request path
+## Request and tenant resolution path
 
-Automation may authenticate with the master bearer token. Interactive `devbox login` uses
+Automation may authenticate with the master or a configured principal bearer token.
+Interactive `devbox login` uses
 the native-app Authorization Code flow with PKCE S256: the CLI binds a numeric loopback
 callback, opens the external browser, validates state, receives a short-lived one-time code,
-and exchanges it for a scoped CLI bearer token. The browser exchanges the master token for
-a signed, HTTP-only SameSite session plus a separate CSRF token. The controller never sends
-the master access token back to either client.
+and exchanges it for a scoped CLI bearer token. The browser exchanges the submitted operator
+or principal token for a signed, HTTP-only SameSite session plus a separate CSRF token. The
+controller never sends the submitted access token back to either client.
 
 Authorization codes live only in a bounded in-memory store. The controller retains a
 SHA-256 digest, client ID, exact loopback redirect URI, PKCE challenge, subject, and expiry.
@@ -22,14 +23,63 @@ with explicit domain separation; an optional dedicated signing key can be suppli
 existing controller Secret. Rotating the effective signing key revokes all issued CLI tokens.
 There are no refresh tokens.
 
-The controller translates lifecycle operations into native Kubernetes resources in its own namespace:
+Multi-tenancy adds an identity and policy resolution step before application work:
+
+```text
+master, principal, CLI, or browser credential
+                     |
+                     v
+              live identity lookup
+                     |
+          X-Devboxes-Tenant or identity default
+                     |
+                     v
+      membership + role authorization (one tenant)
+                     |
+                     v
+ tenant namespace + effective policy + scoped operation
+```
+
+Principal bearer tokens are read from an existing Kubernetes Secret. Browser sessions and
+CLI tokens contain a stable principal subject and a credential epoch, not an immutable role
+snapshot. Every request resolves current memberships, so a configuration rollout can remove
+access without waiting for a CLI token to expire. Unknown and unauthorized tenant IDs both
+return the same forbidden response.
+
+The master token resolves to an installation operator with access to every configured tenant.
+When tenancy is disabled, it resolves to a synthetic `default` tenant backed by the release
+namespace, preserving the original API and resource behavior.
+
+The controller translates lifecycle operations into native Kubernetes resources in the
+selected tenant namespace:
 
 - One `Deployment` per devbox for disposable compute.
 - One `Service` per devbox for SSH through `LoadBalancer` or `NodePort`.
 - One `PersistentVolumeClaim` per devbox, mounted at `/home/dev`.
 - When Insights is enabled, one scoped ingest `Secret` per devbox and one central Insights `PersistentVolumeClaim` for the controller.
 
-Resource names are deterministic (`devbox-NAME`), and labels plus annotations carry controller ownership, creation time, expiry, preset, repository, retained storage size, and any resolved GPU or custom image allocation.
+Resource names are deterministic (`devbox-NAME`) inside a namespace. Labels and annotations
+carry controller ownership, tenant, creator, creation time, expiry, preset, repository,
+retained storage size, and any resolved GPU or custom image allocation.
+
+## Namespace isolation
+
+The Helm release keeps one controller ServiceAccount in the release namespace. With tenancy
+enabled, Helm binds that account to an identical namespaced Role in each tenant namespace.
+It does not receive a ClusterRole. Each tenant gets a separate tokenless workspace
+ServiceAccount; workspaces cannot use it to call the Kubernetes API.
+
+Optional `ResourceQuota` objects provide an aggregate namespace ceiling. Tenant TTL,
+presets, GPU profiles, custom images, workspace Secret, ServiceAccount, and StorageClass are
+resolved in application policy before Kubernetes admission. For per-person isolation, an
+operator creates one tenant per person; a team tenant deliberately shares its inventory and
+quota.
+
+The chart's optional NetworkPolicy selects only managed tenant workspace pods, permits the
+internal SSH target port TCP `2222`, and leaves egress open. The SSH Service may expose port
+`22`. This blocks other inbound pod ports without breaking SSH, repository access, package
+registries, provider APIs, or Insights forwarding. NetworkPolicy enforcement depends on the
+cluster CNI.
 
 ## GPU resolution path
 
@@ -94,6 +144,12 @@ When Insights is enabled, persistence has two additional layers. A bounded SQLit
 
 A UUID instance identity is stored on both the Deployment and home PVC. Retaining and reusing the PVC preserves that identity. Purging the PVC and recreating the box creates a new identity. This separates a box name from the lifetime of the storage that produced its data.
 
+Every central Insights record also carries a tenant ID. Reads, rollups, collector status,
+exports, and purge operations require that tenant scope. A SQLite export is produced through
+the online backup API and then deletes all rows owned by other tenants before it leaves the
+controller. Legacy rows are assigned to the configured default tenant during the database
+migration.
+
 ## Readiness
 
 A devbox becomes `ready` only when its workspace pod reports Ready and its SSH Service has a usable endpoint. `LoadBalancer` uses the first published IP or hostname, with an optional configured fallback host. `NodePort` combines the configured node host with the port allocated by Kubernetes.
@@ -102,8 +158,14 @@ The workspace entrypoint refuses to start without `SSH_AUTHORIZED_KEYS`. It prep
 
 ## Security boundaries
 
-- Controller RBAC is a Role scoped to the release namespace; it cannot manage cluster-wide resources.
+- With tenancy disabled, controller RBAC is a Role scoped to the release namespace.
+- With tenancy enabled, the controller has one RoleBinding in each explicitly configured
+  tenant namespace, never a ClusterRole.
 - Workspace service accounts have no RBAC binding and do not mount Kubernetes API tokens.
+- Principal credentials are loaded from a read-only Secret mount, compared without exposing
+  token values, and constrained by live tenant memberships and application roles.
+- Tenant clients cannot select a Kubernetes namespace, Secret, ServiceAccount, StorageClass,
+  quota, preset outside their allowlist, GPU scheduling policy, or custom-image policy.
 - GPU clients can choose only a configured profile name. They cannot inject images, device resources, RuntimeClasses, supplemental groups, selectors, tolerations, privileged mode, host paths, or device paths.
 - Custom-image clients can choose only a configured profile name or exact configured image reference. They cannot inject a registry, command, Service, volume, port mapping, resource request, capability, host path, ServiceAccount, or scheduling field. Sidecar containers drop all Linux capabilities and cannot mount Devboxes credentials or persistent storage.
 - Workspace Secrets are mounted read-only with mode `0440`, scoped to the workspace group, and are not embedded in either image.
@@ -111,14 +173,17 @@ The workspace entrypoint refuses to start without `SSH_AUTHORIZED_KEYS`. It prep
 - The controller runs as a non-root user with a read-only root filesystem and all Linux capabilities dropped.
 - The workspace runs as root during initialization, then exposes only the unprivileged `dev` SSH user. Password login and root login are disabled.
 - The trusted `dev` user has passwordless `sudo`. The pod adds only `AUDIT_WRITE`, `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `SETGID`, `SETUID`, and `SYS_CHROOT`; `AUDIT_WRITE` lets OpenSSH allocate audited PTYs, while `SYS_ADMIN` and privileged mode are not used.
-- SSH host checking uses a stable alias scoped to both the Devboxes installation and box name, preventing collisions across installations.
+- SSH host checking uses a stable alias scoped to the Devboxes installation, tenant, and box
+  name, preventing collisions across installations or same-named cross-tenant boxes.
 - CLI callbacks accept only exact HTTP loopback URIs with numeric loopback hosts, explicit non-privileged ports, and `/callback`; login return targets accept only the internal authorization route.
 
 The master controller token is an operator credential. Anyone holding it can create, stop,
-delete, or purge every devbox in that installation. A scoped CLI token currently carries the
-same lifecycle authority for that single operator, but it expires and cannot mint browser
-sessions or new CLI tokens. Devboxes does not currently provide tenant isolation or per-user
-authorization.
+delete, or purge every devbox in every tenant. A scoped CLI token expires, cannot mint
+browser sessions or new CLI tokens, and retains the live identity of the principal that
+authorized it. `viewer` is read-only, `member` can manage ordinary lifecycle state, and
+`admin` can also purge retained home or Insights data through the application. SSH remains
+separate: a viewer whose key is present in the tenant workspace Secret can still change
+files inside a running workspace.
 
 ## Scheduling and storage
 

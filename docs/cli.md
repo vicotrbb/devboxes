@@ -26,6 +26,7 @@ Release binaries support macOS and Linux on AMD64 and ARM64.
 | --- | --- |
 | `--url URL` | Override the controller URL for this invocation |
 | `--token TOKEN` | Override the access token, prefer `DEVBOX_TOKEN` to avoid shell history |
+| `--tenant TENANT` | Select one authorized tenant for this invocation |
 | `--json` | Print machine-readable JSON for supported read and lifecycle commands |
 | `--help` | Show command help |
 | `--version` | Show the CLI version |
@@ -49,8 +50,8 @@ Unix. The default location is the operating system configuration directory under
 
 Values resolve in this order:
 
-1. Command options, `--url` and `--token`.
-2. Environment variables, `DEVBOX_URL` and `DEVBOX_TOKEN`.
+1. Command options, `--url`, `--token`, and `--tenant`.
+2. Environment variables, `DEVBOX_URL`, `DEVBOX_TOKEN`, and `DEVBOX_TENANT`.
 3. The saved configuration file.
 
 Set `DEVBOX_CONFIG` to select another configuration file. This is useful for multiple clusters and automation:
@@ -60,6 +61,19 @@ DEVBOX_CONFIG="$HOME/.config/devbox/lab.toml" devbox list --json
 ```
 
 Never pass tokens through shared scripts, process listings, logs, or committed files.
+
+When tenancy is enabled, login verifies the selected or default membership and saves the
+resolved tenant beside the URL and token. A principal's other memberships remain available
+without another login:
+
+```bash
+devbox tenant list
+devbox tenant use research
+devbox --tenant platform list
+DEVBOX_TENANT=research devbox list
+```
+
+Tenant IDs are normalized to lowercase and validated before an HTTP request is sent.
 
 ## Commands
 
@@ -72,7 +86,7 @@ devbox login --url https://devboxes.example.com
 ```
 
 The default flow never prompts for a token in the terminal. If the browser has no valid
-Devboxes session, it first shows the existing operator token login page, then returns to an
+Devboxes session, it first shows the access-token login page, then returns to an
 explicit Approve or Deny decision. Approval issues a scoped token that expires after the
 controller's configured CLI token lifetime, 30 days by default. No refresh token is issued.
 
@@ -88,7 +102,27 @@ devbox --token "$AUTOMATION_TOKEN" login --url https://devboxes.example.com
 ```
 
 Prefer `DEVBOX_TOKEN` over `--token` so the credential does not enter shell history. These
-paths use the supplied master token directly and do not start a browser callback.
+paths use the supplied master or principal token directly and do not start a browser
+callback.
+
+### `devbox tenant`
+
+List the tenant memberships and roles available to the current identity:
+
+```bash
+devbox tenant list
+devbox tenant list --json
+```
+
+The current tenant is marked in human output. Persist another membership for subsequent
+commands only after the server verifies it:
+
+```bash
+devbox tenant use research
+```
+
+Use global `--tenant` or `DEVBOX_TENANT` for a one-command override. An unauthorized tenant
+returns `403` and does not change saved configuration.
 
 ### `devbox create NAME`
 
@@ -103,7 +137,7 @@ devbox create atlas --preset medium --ttl 24 --repo owner/project --ssh
 | `--preset small\|medium\|large` | Resource and storage preset, default `small` |
 | `--ttl HOURS` | Auto-stop interval from 1 to 168 hours, default 24 |
 | `--repo OWNER/REPOSITORY` | Clone a GitHub repository on first boot |
-| `--gpu` | Request the operator's default GPU profile |
+| `--gpu` | Request the active tenant's effective default GPU profile |
 | `--gpu-profile PROFILE` | Request an exact operator-approved profile; implies `--gpu` |
 | `--image PROFILE_OR_IMAGE` | Select an operator-approved custom image profile or its exact configured image reference |
 | `--no-wait` | Return after the API accepts the request |
@@ -181,7 +215,9 @@ devbox ssh atlas -- -L 3000:127.0.0.1:3000
 devbox ssh atlas -- -A
 ```
 
-Arguments after `--` are passed to OpenSSH before the destination. The CLI sets a host-key alias scoped to the controller installation and devbox name, uses `StrictHostKeyChecking=accept-new`, and sends keepalives every 30 seconds.
+Arguments after `--` are passed to OpenSSH before the destination. The CLI sets a host-key
+alias scoped to the controller installation, tenant, and devbox name, uses
+`StrictHostKeyChecking=accept-new`, and sends keepalives every 30 seconds.
 
 The workspace preserves a safe, installed client `TERM` entry, including
 `xterm-ghostty`. Unknown future or malformed values fall back deterministically with one
@@ -255,7 +291,10 @@ devbox metrics purge --box atlas
 devbox metrics purge --box atlas --yes
 ```
 
-JSON preserves nullable measurements and response metadata. CSV prefixes spreadsheet formula characters before writing cells. Purge permanently removes central Insights history for every retained instance of the selected box, but it does not delete workspace storage.
+JSON preserves nullable measurements and response metadata. CSV prefixes spreadsheet
+formula characters before writing cells. Every query and export is restricted to the active
+tenant. Purge permanently removes central Insights history for every retained instance of
+the selected box in that tenant, but it does not delete workspace storage.
 
 ## Output and scripting
 

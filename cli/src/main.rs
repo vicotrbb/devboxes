@@ -36,6 +36,10 @@ struct Cli {
     #[arg(long, global = true)]
     token: Option<String>,
 
+    /// Select a tenant for this command (or set `DEVBOX_TENANT`).
+    #[arg(long, global = true, value_parser = validate_name)]
+    tenant: Option<String>,
+
     /// Print machine-readable JSON where supported.
     #[arg(long, global = true)]
     json: bool,
@@ -68,6 +72,8 @@ enum Commands {
     Gpu(GpuArgs),
     /// Inspect custom image profiles configured by the operator.
     Image(ImageArgs),
+    /// List or select the tenants available to this identity.
+    Tenant(TenantArgs),
 }
 
 #[derive(Args)]
@@ -128,6 +134,23 @@ struct GpuArgs {
 struct ImageArgs {
     #[command(subcommand)]
     command: Option<ImageCommand>,
+}
+
+#[derive(Args)]
+struct TenantArgs {
+    #[command(subcommand)]
+    command: TenantCommand,
+}
+
+#[derive(Subcommand)]
+enum TenantCommand {
+    /// List tenant memberships and roles.
+    List,
+    /// Persist the tenant used by subsequent commands.
+    Use {
+        #[arg(value_parser = validate_name)]
+        tenant: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -273,12 +296,25 @@ impl std::fmt::Display for MetricsExportFormat {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Commands::Login(args) = &cli.command {
-        return login(cli.url.as_deref(), cli.token.as_deref(), args, cli.json).await;
+        return login(
+            cli.url.as_deref(),
+            cli.token.as_deref(),
+            cli.tenant.as_deref(),
+            args,
+            cli.json,
+        )
+        .await;
     }
 
-    let resolved = StoredConfig::load()?.resolve(cli.url.clone(), cli.token.clone())?;
+    let resolved = StoredConfig::load()?.resolve_with_tenant(
+        cli.url.clone(),
+        cli.token.clone(),
+        cli.tenant.clone(),
+    )?;
     let server_alias = resolved.server_alias.clone();
-    let client = ApiClient::new(resolved.url, resolved.token)?;
+    let api_url = resolved.url.clone();
+    let api_token = resolved.token.clone();
+    let client = ApiClient::new(resolved.url, resolved.token, resolved.tenant)?;
 
     match cli.command {
         Commands::Login(_) => unreachable!(),
@@ -292,12 +328,14 @@ async fn main() -> Result<()> {
         Commands::Metrics(args) => metrics(&client, args, cli.json).await,
         Commands::Gpu(args) => gpu(&client, args, cli.json).await,
         Commands::Image(args) => image(&client, args, cli.json).await,
+        Commands::Tenant(args) => tenant(&client, args, cli.json, &api_url, &api_token).await,
     }
 }
 
 async fn login(
     url: Option<&str>,
     provided_token: Option<&str>,
+    tenant: Option<&str>,
     args: &LoginArgs,
     json: bool,
 ) -> Result<()> {
@@ -339,26 +377,41 @@ async fn login(
         }
         response.access_token
     };
-    let resolved = stored.resolve(Some(configured_url), Some(token.clone()))?;
-    let identity = ApiClient::new(resolved.url.clone(), resolved.token)?
+    // A previous principal's saved tenant must not override the server-selected
+    // default during a new login. Explicit CLI/environment selection still wins.
+    let login_config = StoredConfig {
+        tenant: None,
+        ..stored
+    };
+    let resolved = login_config.resolve_with_tenant(
+        Some(configured_url),
+        Some(token.clone()),
+        tenant.map(str::to_owned),
+    )?;
+    let identity = ApiClient::new(resolved.url.clone(), resolved.token, resolved.tenant)?
         .whoami()
         .await
         .context("token verification failed")?;
-    let path = StoredConfig::save(&resolved.url, &token)?;
+    let path = StoredConfig::save_with_tenant(&resolved.url, &token, Some(&identity.tenant))?;
     if json {
         println!(
             "{}",
             serde_json::json!({
                 "user": identity.user,
+                "subject": identity.subject,
                 "mode": identity.mode,
+                "tenant": identity.tenant,
+                "role": identity.role,
                 "config": path,
             })
         );
     } else {
         println!(
-            "✓ authenticated as {} via {}\n  config: {}",
+            "✓ authenticated as {} via {}\n  tenant: {} ({})\n  config: {}",
             identity.user,
             identity.mode,
+            identity.tenant,
+            identity.role,
             path.display()
         );
     }
@@ -622,6 +675,71 @@ async fn image(client: &ApiClient, args: ImageArgs, json: bool) -> Result<()> {
     Ok(())
 }
 
+async fn tenant(
+    client: &ApiClient,
+    args: TenantArgs,
+    json: bool,
+    api_url: &str,
+    api_token: &str,
+) -> Result<()> {
+    match args.command {
+        TenantCommand::List => {
+            let identity = client.whoami().await?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "current": identity.tenant,
+                        "tenants": identity.tenants,
+                    })
+                );
+            } else {
+                println!("{:<3} {:<20} {:<28} ROLE", "", "TENANT", "NAME");
+                for item in identity.tenants {
+                    let marker = if item.id == identity.tenant {
+                        "→"
+                    } else {
+                        ""
+                    };
+                    println!(
+                        "{marker:<3} {:<20} {:<28} {}",
+                        item.id, item.display_name, item.role
+                    );
+                }
+            }
+        }
+        TenantCommand::Use { tenant } => {
+            let selected = ApiClient::new(
+                api_url.to_owned(),
+                api_token.to_owned(),
+                Some(tenant.clone()),
+            )?
+            .whoami()
+            .await
+            .with_context(|| format!("tenant {tenant:?} is not available to this identity"))?;
+            let path = StoredConfig::save_with_tenant(api_url, api_token, Some(&selected.tenant))?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "tenant": selected.tenant,
+                        "role": selected.role,
+                        "config": path,
+                    })
+                );
+            } else {
+                println!(
+                    "✓ using tenant {} ({})\n  config: {}",
+                    selected.tenant,
+                    selected.role,
+                    path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn print_gpu_profiles(capabilities: &GpuCapabilities) {
     if !capabilities.enabled {
         println!("GPU acceleration is disabled by the operator.");
@@ -872,6 +990,7 @@ async fn run_ssh(box_info: &Devbox, extra_args: &[String], server_alias: &str) -
         .context("devbox does not have an SSH address yet")?;
     let arguments = ssh_arguments(
         server_alias,
+        &box_info.tenant,
         &box_info.name,
         host,
         box_info.ssh_port,
@@ -892,6 +1011,7 @@ async fn run_ssh(box_info: &Devbox, extra_args: &[String], server_alias: &str) -
 
 fn ssh_arguments(
     server_alias: &str,
+    tenant: &str,
     name: &str,
     host: &str,
     port: u16,
@@ -902,7 +1022,7 @@ fn ssh_arguments(
         "-p".to_owned(),
         port.to_string(),
         "-o".to_owned(),
-        format!("HostKeyAlias={server_alias}-{name}"),
+        format!("HostKeyAlias={server_alias}-{tenant}-{name}"),
         "-o".to_owned(),
         "StrictHostKeyChecking=accept-new".to_owned(),
         "-o".to_owned(),
@@ -919,6 +1039,7 @@ fn print_box(box_info: &Devbox, json: bool) -> Result<()> {
         return Ok(());
     }
     println!("{}  {}", box_info.name, box_info.state);
+    println!("  tenant:     {}", box_info.tenant);
     println!("  preset:     {}", box_info.preset);
     println!("  storage:    {}", box_info.storage_size);
     if let Some(gpu) = &box_info.gpu {
@@ -982,8 +1103,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        Cli, Commands, GpuCommand, ImageCommand, MetricsCommand, human_duration, metrics_query,
-        resolve_login_token, ssh_arguments, validate_image_selector, validate_name,
+        Cli, Commands, GpuCommand, ImageCommand, MetricsCommand, TenantCommand, human_duration,
+        metrics_query, resolve_login_token, ssh_arguments, validate_image_selector, validate_name,
     };
 
     #[test]
@@ -1027,7 +1148,14 @@ mod tests {
     #[test]
     fn extra_ssh_options_come_before_the_destination() {
         let extra = vec!["-L".to_owned(), "3000:127.0.0.1:3000".to_owned()];
-        let arguments = ssh_arguments("devboxes-cluster-one", "atlas", "192.0.2.10", 22, &extra);
+        let arguments = ssh_arguments(
+            "devboxes-cluster-one",
+            "platform",
+            "atlas",
+            "192.0.2.10",
+            22,
+            &extra,
+        );
         let forwarding = arguments.iter().position(|item| item == "-L").unwrap();
         let destination = arguments
             .iter()
@@ -1035,7 +1163,7 @@ mod tests {
             .unwrap();
 
         assert!(forwarding < destination);
-        assert!(arguments.contains(&"HostKeyAlias=devboxes-cluster-one-atlas".to_owned()));
+        assert!(arguments.contains(&"HostKeyAlias=devboxes-cluster-one-platform-atlas".to_owned()));
     }
 
     #[test]
@@ -1082,6 +1210,27 @@ mod tests {
     fn metrics_rejects_unknown_providers_and_invalid_box_names() {
         assert!(Cli::try_parse_from(["devbox", "metrics", "--provider", "other"]).is_err());
         assert!(Cli::try_parse_from(["devbox", "metrics", "--box", "Invalid"]).is_err());
+    }
+
+    #[test]
+    fn tenant_context_and_commands_are_discoverable() {
+        let list =
+            Cli::try_parse_from(["devbox", "--tenant", "platform", "tenant", "list"]).unwrap();
+        assert_eq!(list.tenant.as_deref(), Some("platform"));
+        let Commands::Tenant(args) = list.command else {
+            panic!("expected tenant command");
+        };
+        assert!(matches!(args.command, TenantCommand::List));
+
+        let select = Cli::try_parse_from(["devbox", "tenant", "use", "research"]).unwrap();
+        let Commands::Tenant(args) = select.command else {
+            panic!("expected tenant command");
+        };
+        assert!(matches!(
+            args.command,
+            TenantCommand::Use { tenant } if tenant == "research"
+        ));
+        assert!(Cli::try_parse_from(["devbox", "--tenant", "../other", "list"]).is_err());
     }
 
     #[test]

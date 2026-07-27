@@ -7,23 +7,30 @@
     <title>Devboxes</title>
     <link rel="icon" href="/static/favicon.svg?v={{ version }}" type="image/svg+xml">
     <link rel="stylesheet" href="/static/styles.css?v={{ version }}">
+    <script src="/static/tenant.js?v={{ version }}" defer></script>
     <script src="/static/app.js?v={{ version }}" defer></script>
   </head>
-  <body>
+  <body
+    data-tenant="{{ tenancy.current.id }}"
+    data-can-manage="{{ 'true' if can_manage else 'false' }}"
+    data-can-purge="{{ 'true' if can_purge else 'false' }}"
+  >
+    {% set tenant_query = '?tenant=' ~ tenancy.current.id if tenancy.enabled else '' %}
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="app-header">
       <div class="header-leading">
-        <a class="wordmark" href="/" aria-label="Devboxes home">
+        <a class="wordmark" href="/{{ tenant_query }}" aria-label="Devboxes home">
           <span class="wordmark-mark" aria-hidden="true">db</span>
           <span>devboxes</span>
         </a>
         <nav class="primary-nav" aria-label="Primary navigation">
-          <a class="nav-link" href="/" aria-current="page">Workbench</a>
-          <a class="nav-link" href="/insights">Insights</a>
-          <a class="nav-link" href="/docs">Docs</a>
+          <a class="nav-link" href="/{{ tenant_query }}" aria-current="page">Workbench</a>
+          <a class="nav-link" href="/insights{{ tenant_query }}">Insights</a>
+          <a class="nav-link" href="/docs{{ tenant_query }}">Docs</a>
         </nav>
       </div>
       <div class="header-actions">
+        {% include "_tenant_switcher.html" %}
         <span class="cluster-state"><span aria-hidden="true"></span> {{ cluster_name }} connected</span>
         <button class="button button-quiet" id="refresh-button" type="button">Refresh</button>
         <button class="button button-quiet" id="logout-button" type="button">Sign out</button>
@@ -33,7 +40,9 @@
     <main class="app-main" id="main-content" tabindex="-1">
       <section class="page-intro" aria-labelledby="page-title">
         <div>
-          <p class="context-line">Ephemeral compute · persistent workspace</p>
+          <p class="context-line">
+            {{ tenancy.current.display_name }} · {{ tenancy.current.role }} access
+          </p>
           <h1 id="page-title">Development machines, on demand.</h1>
           <p>
             Create a prepared environment here or from the terminal. Disconnect freely, while
@@ -41,8 +50,8 @@
           </p>
         </div>
         <div class="cli-strip" aria-label="Terminal quick start">
-          <code>devbox create &lt;name&gt; --ssh</code>
-          <button class="copy-button" type="button" data-copy="devbox create my-box --ssh">
+          <code>devbox{% if tenancy.enabled %} --tenant {{ tenancy.current.id }}{% endif %} create &lt;name&gt; --ssh</code>
+          <button class="copy-button" type="button" data-copy="devbox{% if tenancy.enabled %} --tenant {{ tenancy.current.id }}{% endif %} create my-box --ssh">
             Copy
           </button>
         </div>
@@ -55,10 +64,17 @@
             <p>Compute expires into a safe stopped state. Your volume is never deleted automatically.</p>
           </div>
           <span class="capacity-note">
-            {{ storage_class }} storage · {{ workspace_service_type }} SSH{% if gpu.enabled %} · GPU profiles{% endif %}{% if images.enabled %} · approved images{% endif %}
+            {{ storage_class }} storage · {{ workspace_service_type }} SSH · {{ tenancy.current.role }}{% if gpu.enabled %} · GPU profiles{% endif %}{% if images.enabled %} · approved images{% endif %}
           </span>
         </div>
 
+        {% if not can_manage %}
+        <div class="role-notice" role="status">
+          <strong>Read-only tenant access.</strong>
+          You can inspect workspaces and copy SSH commands, but lifecycle changes require member or admin access.
+          Shell authorization is controlled separately by this tenant’s workspace SSH keys.
+        </div>
+        {% endif %}
         <form id="create-form" class="create-form">
           <div class="field field-name">
             <label for="name">Name</label>
@@ -67,27 +83,20 @@
           <div class="field">
             <label for="preset">Size</label>
             <select id="preset" name="preset">
+              {% if 'small' in tenancy.allowed_presets %}
               <option value="small">Small · 512 MiB</option>
+              {% endif %}
+              {% if 'medium' in tenancy.allowed_presets %}
               <option value="medium">Medium · 2 GiB</option>
+              {% endif %}
+              {% if 'large' in tenancy.allowed_presets %}
               <option value="large">Large · 4 GiB</option>
+              {% endif %}
             </select>
           </div>
           <div class="field">
             <label for="ttl-hours">Auto-stop</label>
-            <select id="ttl-hours" name="ttl_hours">
-              {% set ttl_options = [
-                (4, "4 hours"),
-                (8, "8 hours"),
-                (24, "24 hours"),
-                (72, "3 days"),
-                (168, "7 days"),
-              ] %}
-              {% for hours, label in ttl_options %}
-              {% if hours <= max_ttl_hours %}
-              <option value="{{ hours }}"{% if hours == default_ttl_hours %} selected{% endif %}>{{ label }}</option>
-              {% endif %}
-              {% endfor %}
-            </select>
+            <input id="ttl-hours" name="ttl_hours" type="number" min="1" max="{{ max_ttl_hours }}" value="{{ default_ttl_hours }}" required>
           </div>
           <div class="field field-accelerator">
             <label for="gpu-profile">Accelerator <span>optional</span></label>
@@ -153,8 +162,8 @@
         <div id="empty-state" class="empty-state" hidden>
           <div class="empty-glyph" aria-hidden="true">$</div>
           <div>
-            <h3>The bench is clear.</h3>
-            <p>Create your first box above, or run <code>devbox create first-box --ssh</code>.</p>
+            <h3>This tenant’s bench is clear.</h3>
+            <p>{% if can_manage %}Create a box above, or run <code>devbox create first-box --ssh</code>.{% else %}No workspaces are currently provisioned in this tenant.{% endif %}</p>
           </div>
         </div>
 
@@ -186,10 +195,10 @@
         </div>
         <p>Compute and its SSH address will be removed immediately.</p>
         <label class="purge-choice">
-          <input type="checkbox" id="purge-volume">
+          <input type="checkbox" id="purge-volume"{% if not can_purge %} disabled{% endif %}>
           <span>
             <strong>Also purge the home volume</strong>
-            <small>Source code, shell history, configuration, and saved logins cannot be recovered.</small>
+            <small>{% if can_purge %}Source code, shell history, configuration, and saved logins cannot be recovered.{% else %}Admin access is required to purge persistent data.{% endif %}</small>
           </span>
         </label>
         <div class="dialog-actions">

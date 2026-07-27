@@ -1,6 +1,8 @@
 # Operations
 
-This runbook covers the supported single-operator deployment model. Keep installation values, chart version, controller image, workspace image, and CLI version aligned.
+This runbook covers both the default single-operator deployment and opt-in
+namespace-per-tenant operation. Keep installation values, chart version, controller image,
+workspace image, and CLI version aligned.
 
 ## Routine health check
 
@@ -10,6 +12,15 @@ kubectl get deployment,service,pvc,pod -n devboxes -o wide
 kubectl rollout status deployment/devboxes -n devboxes
 kubectl logs deployment/devboxes -n devboxes --tail=200
 ./scripts/verify-install.sh
+```
+
+For a multi-tenant installation, also check every configured namespace and identity:
+
+```bash
+kubectl get resourcequota,networkpolicy,serviceaccount -n devboxes-platform
+kubectl get deployment,service,pvc,pod -n devboxes-platform -o wide
+devbox tenant list
+devbox --tenant platform list
 ```
 
 `/health` proves that the HTTP process responds. `/ready` performs a namespaced Deployment list against the Kubernetes API and, when enabled, verifies the Insights database. It returns 503 when either required dependency is unavailable. Neither endpoint creates resources.
@@ -43,6 +54,15 @@ For GPU capacity, count the extended-resource units requested by active profile 
 For custom image profiles, add each sidecar's configured CPU and memory request to the selected workspace preset when forecasting node pressure. A catalog profile is trusted supply-chain policy, not an ad hoc developer image setting. Pin or regularly review image references, validate every supported architecture, verify registry credentials from each eligible node, and record the intended pod-local port and resource envelope.
 
 Profile selectors and tolerations are policy, not capacity detection. Before publishing a profile, prove that at least one node matches all selectors, tolerates the intended taints, advertises the exact resource, and can pull the profile image. Document whether each profile is dedicated or shared.
+
+In multi-tenant mode, plan capacity from each namespace's `ResourceQuota` and the
+intersection of its preset, GPU, and image allowlists. Quota is aggregate within a tenant.
+Use a user-per-tenant topology when each person requires an independent ceiling. Inspect
+live consumption with:
+
+```bash
+kubectl describe resourcequota -n devboxes-platform
+```
 
 ## Backups and restore
 
@@ -88,6 +108,15 @@ helm upgrade devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
 
 Then run `scripts/verify-install.sh`, confirm `/ready`, list existing boxes, create a disposable smoke box, connect over SSH, stop it, start it, and delete it with purge.
 
+Before first enabling multi-tenancy, choose which tenant owns existing release-namespace
+workspaces and legacy Insights rows. The database migration assigns legacy Insights records
+to `tenancy.defaultTenant`, but Kubernetes workloads and PVCs are not moved between
+namespaces. Keep the default tenant in the release namespace to adopt those resources in
+place, or back them up and migrate them explicitly. Provision each tenant workspace Secret
+and principal token before rollout, render all namespace-scoped RBAC and quota objects, then
+test every role and cross-tenant denial. Follow the complete
+[multi-tenancy rollout](multi-tenancy.md#rollout-and-rollback).
+
 When GPU configuration or images change, render the profile JSON before applying, run `devbox gpu profiles` after rollout, and create a disposable box for every changed profile. Verify the vendor diagnostic inside the box, stop and start it, and confirm the same profile contract remains. Stopping releases live device capacity, so Kubernetes may select a different physical device on start. Existing GPU Deployments retain their resolved snapshots; a Helm profile edit affects only later creations. Plan migrations as explicit delete and recreate operations, with a separate PVC retention decision.
 
 When custom image profiles change, render the catalog before applying, run `devbox image profiles`, and create a disposable test box for every changed profile. For a sidecar, verify a declared non-root image user, a port from 1024 through 65535, the container list, no unexpected Secret or PVC mount, application health over pod loopback, SSH tunneling, stop and start, and cleanup. For a workspace-mode profile, also verify SSH readiness, persistent-home reuse, repository bootstrap, and Insights behavior if enabled. Existing Deployments retain their creation-time resolved snapshot; changing or disabling a Helm profile rejects new requests but does not rewrite existing boxes. Retire a profile only after inventorying `devbox list --json` and making an explicit delete or migration plan.
@@ -122,6 +151,11 @@ kubectl rollout status deployment/devboxes -n devboxes
 
 Rotation invalidates browser sessions and saved CLI tokens. Log in again after the rollout. Rotate immediately after suspected disclosure, then review controller access logs available at the ingress or network boundary.
 
+To rotate only one principal, update its key in `tenancy.existingPrincipalSecret` and restart
+the controller. That principal's browser sessions and CLI tokens fail their credential-epoch
+check after restart; other principals remain valid. Membership changes also require a Helm
+rollout and take effect on every subsequent request.
+
 When `insights.signingKeyKey` is empty, the same controller-token rotation also rotates the domain-separated ingest signing key. Active workspaces need a normal stop and start to receive a new scoped credential. With a dedicated Insights signing key, rotate that field independently and follow the same workspace reconciliation procedure.
 
 Rotate workspace provider tokens independently through the workspace Secret. Existing files copied into persistent homes are not overwritten automatically, so revoke compromised provider sessions at the provider and update affected homes explicitly.
@@ -136,6 +170,11 @@ Inventory before deletion:
 kubectl get deployment,service,pvc -n devboxes \
   -l app.kubernetes.io/managed-by=devboxes-controller
 ```
+
+For tenancy, repeat the inventory in every configured tenant namespace. Helm-created tenant
+namespaces use a keep policy and are not removed with the release. Delete a tenant namespace
+only after a separate backup and retention decision, because namespace deletion also removes
+its retained PVCs and Secrets.
 
 Back up required PVCs, delete boxes through the CLI, and use `--purge` only for volumes approved for permanent removal. Verify the namespace contents before deleting the namespace.
 

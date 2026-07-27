@@ -8,6 +8,8 @@ Devboxes turns Kubernetes capacity into persistent, SSH-accessible development e
 - [Golden path](golden-path.md), the recommended production-shaped setup and fastest daily workflow.
 - [Configuration](configuration.md), every supported Helm value and deployment mode.
 - [Credentials](credentials.md), controller authentication and optional workspace accounts.
+- [Multi-tenancy](multi-tenancy.md), tenant namespaces, roles, Secrets, quotas, policy
+  allowlists, migration, and isolation boundaries.
 
 ## Use Devboxes
 
@@ -34,4 +36,9 @@ Devboxes turns Kubernetes capacity into persistent, SSH-accessible development e
 
 ## Supported scope
 
-Devboxes supports one trusted operator or trusted operator group per installation. The controller is namespaced, each workspace has persistent home storage, each SSH Service uses either `LoadBalancer` or `NodePort`, and GPU devices and custom images are optional operator-owned profiles. Multi-tenant authorization, arbitrary untrusted container execution, browser terminals, cluster-wide GPU driver installation, and automatic PVC deletion are outside the current scope.
+Devboxes supports a backward-compatible single-operator mode and an opt-in
+namespace-per-tenant mode. Each workspace has persistent home storage, each SSH Service uses
+either `LoadBalancer` or `NodePort`, and GPU devices and custom images remain
+operator-approved profiles. Arbitrary hostile container execution, browser terminals,
+cluster-wide GPU driver installation, and automatic PVC deletion remain outside the
+supported scope.

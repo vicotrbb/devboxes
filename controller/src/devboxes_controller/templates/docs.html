@@ -7,23 +7,26 @@
     <title>Documentation · Devboxes</title>
     <link rel="icon" href="/static/favicon.svg?v={{ version }}" type="image/svg+xml">
     <link rel="stylesheet" href="/static/styles.css?v={{ version }}">
+    <script src="/static/tenant.js?v={{ version }}" defer></script>
     <script src="/static/docs.js?v={{ version }}" defer></script>
   </head>
-  <body class="docs-page">
+  <body class="docs-page" data-tenant="{{ tenancy.current.id }}">
+    {% set tenant_query = '?tenant=' ~ tenancy.current.id if tenancy.enabled else '' %}
     <a class="skip-link" href="#main-content">Skip to documentation</a>
     <header class="app-header">
       <div class="header-leading">
-        <a class="wordmark" href="/" aria-label="Devboxes home">
+        <a class="wordmark" href="/{{ tenant_query }}" aria-label="Devboxes home">
           <span class="wordmark-mark" aria-hidden="true">db</span>
           <span>devboxes</span>
         </a>
         <nav class="primary-nav" aria-label="Primary navigation">
-          <a class="nav-link" href="/">Workbench</a>
-          <a class="nav-link" href="/insights">Insights</a>
-          <a class="nav-link" href="/docs" aria-current="page">Docs</a>
+          <a class="nav-link" href="/{{ tenant_query }}">Workbench</a>
+          <a class="nav-link" href="/insights{{ tenant_query }}">Insights</a>
+          <a class="nav-link" href="/docs{{ tenant_query }}" aria-current="page">Docs</a>
         </nav>
       </div>
       <div class="header-actions">
+        {% include "_tenant_switcher.html" %}
         <span class="cluster-state"><span aria-hidden="true"></span> {{ cluster_name }} connected</span>
         <button class="button button-quiet" id="logout-button" type="button">Sign out</button>
       </div>
@@ -35,6 +38,7 @@
           <p class="docs-rail-title">Using Devboxes</p>
           <nav class="docs-toc" aria-label="On this page">
             <a href="#quick-start">Quick start</a>
+            <a href="#tenancy">Tenant access</a>
             <a href="#lifecycle">What persists</a>
             <a href="#create">Create a box</a>
             <a href="#gpu">GPU acceleration</a>
@@ -56,7 +60,9 @@
 
       <article class="docs-article">
         <header class="docs-hero">
-          <p class="context-line">Devboxes documentation</p>
+          <p class="context-line">
+            {{ tenancy.current.display_name }} · {{ tenancy.current.role }} access
+          </p>
           <h1>From an idea to a ready workspace.</h1>
           <p class="docs-lede">
             Devboxes gives you a prepared Linux machine on Kubernetes, reached from your terminal
@@ -68,6 +74,7 @@
             <span>SSH + tmux</span>
             <span>Persistent home</span>
             <span>Automatic compute stop</span>
+            {% if tenancy.enabled %}<span>Namespace isolated</span>{% endif %}
           </div>
         </header>
 
@@ -85,8 +92,8 @@
             </div>
             <pre><code id="quick-start-command">curl -fsSLO https://raw.githubusercontent.com/vicotrbb/devboxes/main/scripts/install-devbox-cli.sh
 sh install-devbox-cli.sh
-devbox login --url {{ external_url }}
-devbox create atlas --preset medium --ttl {{ default_ttl_hours }} --repo owner/your-project --ssh</code></pre>
+devbox login --url {{ external_url }}{% if tenancy.enabled %} --tenant {{ tenancy.current.id }}{% endif %}
+devbox create atlas --preset {{ default_preset }} --ttl {{ default_ttl_hours }} --repo owner/your-project --ssh</code></pre>
           </div>
 
           <ol class="docs-steps">
@@ -112,6 +119,51 @@ devbox create atlas --preset medium --ttl {{ default_ttl_hours }} --repo owner/y
             <strong>Your first mental shortcut</strong>
             <p>Closing SSH leaves tmux and your processes running. Stopping the devbox ends processes but keeps everything already written under <code>/home/dev</code>.</p>
           </div>
+        </section>
+
+        <section class="docs-section" id="tenancy" tabindex="-1">
+          <h2>Know your tenant boundary</h2>
+          {% if tenancy.enabled %}
+          <p>
+            You are viewing <strong>{{ tenancy.current.display_name }}</strong>
+            (<code>{{ tenancy.current.id }}</code>) with the
+            <strong>{{ tenancy.current.role }}</strong> role. Its workspaces, home volumes,
+            SSH credentials, quotas, and Insights history are isolated in namespace
+            <code>{{ namespace }}</code>.
+          </p>
+          <div class="command-block">
+            <div class="command-heading">
+              <span>Inspect or change CLI tenant context</span>
+              <button class="command-copy" type="button" data-copy-target="tenant-command" aria-label="Copy tenant commands">Copy</button>
+            </div>
+            <pre><code id="tenant-command">devbox tenant list
+devbox tenant use {{ tenancy.current.id }}
+devbox --tenant {{ tenancy.current.id }} list</code></pre>
+          </div>
+          <ul class="docs-bullets">
+            <li><strong>viewer</strong> can inspect workspaces and metrics.</li>
+            <li><strong>member</strong> can create, start, stop, and delete compute while retaining volumes.</li>
+            <li><strong>admin</strong> can also purge home volumes and central Insights history.</li>
+            <li>The installation operator can access every configured tenant for recovery.</li>
+            <li>These roles govern the Devboxes API. Shell access is separately controlled by the tenant workspace Secret’s SSH keys.</li>
+          </ul>
+          {% if tenancy.resource_quota %}
+          <div class="docs-note">
+            <strong>Tenant quota</strong>
+            <p>
+              {% for key, value in tenancy.resource_quota.items() %}
+              <code>{{ key }}={{ value }}</code>{% if not loop.last %} · {% endif %}
+              {% endfor %}
+            </p>
+          </div>
+          {% endif %}
+          {% else %}
+          <p>
+            Multi-tenancy is disabled, so this installation retains its backward-compatible
+            single-operator namespace. Enable the Helm tenancy contract before granting access to
+            mutually untrusted users or teams.
+          </p>
+          {% endif %}
         </section>
 
         <section class="docs-section" id="lifecycle" tabindex="-1">
@@ -185,11 +237,11 @@ devbox create atlas --preset medium --ttl {{ default_ttl_hours }} --repo owner/y
             <pre><code id="create-command"># Empty box, connect when ready
 devbox create scratch --ssh
 
-# Clone a GitHub repository and use a larger workspace
-devbox create compiler --preset large --ttl 72 --repo owner/compiler --ssh
+# Clone a GitHub repository and use the largest available workspace
+devbox create compiler --preset {{ largest_preset }} --ttl {{ example_ttl_hours }} --repo owner/compiler --ssh
 
 # Provision asynchronously for later
-devbox create nightly --preset small --no-wait</code></pre>
+devbox create nightly --preset {{ smallest_preset }} --no-wait</code></pre>
           </div>
 
           <div class="docs-table-wrap" tabindex="0" aria-label="Resource preset table; scroll horizontally if needed">
@@ -218,9 +270,15 @@ devbox create nightly --preset small --no-wait</code></pre>
           </div>
 
           <ul class="docs-bullets">
+            {% if "small" in allowed_presets %}
             <li><strong>small</strong> is comfortable for scripts, reviews, and lightweight services.</li>
+            {% endif %}
+            {% if "medium" in allowed_presets %}
             <li><strong>medium</strong> is the everyday default for compilers, agents, and local app stacks.</li>
+            {% endif %}
+            {% if "large" in allowed_presets %}
             <li><strong>large</strong> is for memory-heavy builds, databases, or parallel tooling.</li>
+            {% endif %}
             <li>Reusing a retained volume can expand it for a larger preset; volumes are never shrunk.</li>
           </ul>
         </section>
@@ -230,7 +288,8 @@ devbox create nightly --preset small --no-wait</code></pre>
           {% if gpu.enabled %}
           <p>
             This installation exposes {{ gpu.profiles | length }} GPU profile{% if gpu.profiles | length != 1 %}s{% endif %}.
-            CPU-only remains the default. In the CLI, <code>--gpu</code> selects the operator's default and
+            CPU-only remains the default. In the CLI,
+            {% if gpu.default_profile %}<code>--gpu</code> selects this tenant's default and {% endif %}
             <code>--gpu-profile</code> selects an exact profile. The workbench offers the same catalog.
           </p>
 
@@ -263,8 +322,8 @@ devbox create nightly --preset small --no-wait</code></pre>
               <button class="command-copy" type="button" data-copy-target="gpu-command" aria-label="Copy GPU commands">Copy</button>
             </div>
             <pre><code id="gpu-command">devbox gpu profiles
-devbox create inference --gpu --ssh
-devbox create training --gpu-profile {{ gpu.profiles[0].name }} --preset large --ssh</code></pre>
+{% if gpu.default_profile %}devbox create inference --gpu --ssh
+{% endif %}devbox create training --gpu-profile {{ gpu.profiles[0].name }} --preset {{ largest_preset }} --ssh</code></pre>
           </div>
 
           <p>
@@ -442,6 +501,7 @@ devbox delete atlas --purge</code></pre>
             <code>create</code>, <code>list</code>, <code>status</code>, <code>start</code>, and
             <code>stop</code> support global <code>--json</code>. Use <code>DEVBOX_TOKEN</code> for
             non-interactive authentication so a token never appears in command history.
+            {% if tenancy.enabled %}Set <code>DEVBOX_TENANT</code> to make the authorization boundary explicit.{% endif %}
           </p>
 
           <div class="command-block">
@@ -451,12 +511,15 @@ devbox delete atlas --purge</code></pre>
             </div>
             <pre><code id="automation-command">DEVBOX_URL="{{ external_url }}" \
 DEVBOX_TOKEN="$TOKEN_FROM_YOUR_SECRET_STORE" \
+{% if tenancy.enabled %}DEVBOX_TENANT="{{ tenancy.current.id }}" \
+{% endif %}
   devbox --json list | jq -r '.[] | select(.state == "ready") | .name'</code></pre>
           </div>
 
           <dl class="docs-definitions compact">
             <div><dt><code>DEVBOX_TOKEN</code></dt><dd>Overrides the saved access token.</dd></div>
             <div><dt><code>DEVBOX_URL</code></dt><dd>Overrides the saved API URL.</dd></div>
+            {% if tenancy.enabled %}<div><dt><code>DEVBOX_TENANT</code></dt><dd>Selects one authorized tenant without changing saved context.</dd></div>{% endif %}
             <div><dt><code>DEVBOX_CONFIG</code></dt><dd>Uses a separate config file for an isolated profile or test.</dd></div>
             <div><dt><code>--url</code> / <code>--token</code></dt><dd>Highest-precedence one-command overrides; prefer the token environment variable for secrecy.</dd></div>
           </dl>
@@ -485,7 +548,7 @@ devbox metrics export --format csv &gt; insights.csv</code></pre>
             computes a productivity score or an AI-written percentage, and it does not collect
             prompts, responses, commands, paths, file contents, Git authors, or commit messages.
           </p>
-          <a class="button button-primary docs-workbench-link" href="/insights">Open Insights</a>
+          <a class="button button-primary docs-workbench-link" href="/insights{{ tenant_query }}">Open Insights</a>
           {% else %}
           <p>
             Insights is disabled for this installation. An operator can opt in through the Helm
@@ -507,9 +570,9 @@ devbox metrics export --format csv &gt; insights.csv</code></pre>
             <li>When enabled, the create form presents reviewed image profiles rather than accepting a raw container reference.</li>
             <li>State is written as text, ready, starting, stopped, or degraded, rather than conveyed by color alone.</li>
             <li>Deleting opens a confirmation that distinguishes retained storage from permanent purge.</li>
-            <li>The same access token creates a signed browser session; the raw token is not kept in the session cookie.</li>
+            <li>The submitted access token creates a signed browser session; the raw token is not kept in the session cookie.</li>
           </ul>
-          <a class="button button-primary docs-workbench-link" href="/">Open the workbench</a>
+          <a class="button button-primary docs-workbench-link" href="/{{ tenant_query }}">Open the workbench</a>
         </section>
 
         <section class="docs-section" id="commands" tabindex="-1">
@@ -524,7 +587,9 @@ devbox metrics export --format csv &gt; insights.csv</code></pre>
                 </tr>
               </thead>
               <tbody>
-                <tr><th scope="row"><code>devbox login</code></th><td>Verifies and saves API access.</td><td><code>--url</code>, <code>--token</code></td></tr>
+                <tr><th scope="row"><code>devbox login</code></th><td>Verifies and saves API access.</td><td><code>--url</code>, <code>--token</code>, <code>--tenant</code></td></tr>
+                {% if tenancy.enabled %}<tr><th scope="row"><code>devbox tenant</code></th><td>Lists memberships or saves a verified tenant context.</td><td><code>list</code>, <code>use</code></td></tr>{% endif %}
+                {% if tenancy.enabled %}<tr><th scope="row"><code>devbox --tenant TENANT COMMAND</code></th><td>Runs one command inside an authorized tenant boundary.</td><td><code>--json</code></td></tr>{% endif %}
                 <tr><th scope="row"><code>devbox create NAME</code></th><td>Creates a prepared box and waits for readiness.</td><td><code>--preset</code>, <code>--ttl</code>, <code>--repo</code>, <code>--image</code>, <code>--ssh</code>, <code>--no-wait</code></td></tr>
                 <tr><th scope="row"><code>devbox image profiles</code></th><td>Lists the operator-approved image catalog.</td><td><code>--json</code></td></tr>
                 <tr><th scope="row"><code>devbox list</code></th><td>Lists every active or stopped box.</td><td><code>--json</code></td></tr>
@@ -544,7 +609,7 @@ devbox metrics export --format csv &gt; insights.csv</code></pre>
 
           <details class="docs-disclosure">
             <summary>The CLI says authentication is required</summary>
-            <p>Run <code>devbox login --url {{ external_url }}</code> and enter the access token created during installation. For a script, confirm <code>DEVBOX_TOKEN</code> is present and non-empty.</p>
+            <p>Run <code>devbox login --url {{ external_url }}</code> and enter the access token issued by your cluster operator. For a script, confirm <code>DEVBOX_TOKEN</code> is present and non-empty.</p>
           </details>
           <details class="docs-disclosure">
             <summary>The TLS certificate is not trusted</summary>
@@ -560,11 +625,11 @@ devbox metrics export --format csv &gt; insights.csv</code></pre>
           </details>
           <details class="docs-disclosure">
             <summary>The repository did not clone</summary>
-            <p>Connect to the empty box, run <code>gh auth status</code>, then retry with <code>gh repo clone OWNER/REPOSITORY ~/workspace/project</code>. Confirm the shared GitHub token can read the repository.</p>
+            <p>Connect to the empty box, run <code>gh auth status</code>, then retry with <code>gh repo clone OWNER/REPOSITORY ~/workspace/project</code>. Confirm the active tenant workspace credential can read the repository.</p>
           </details>
           <details class="docs-disclosure">
             <summary>SSH reports a changed host key after an intentional purge</summary>
-            <p>A purged home creates a new host identity. Copy the install-scoped alias from the SSH warning, remove only that entry with <code>ssh-keygen -R ALIAS</code>, then reconnect and verify the new key.</p>
+            <p>A purged home creates a new host identity. Copy the installation-, tenant-, and box-scoped alias from the SSH warning, remove only that entry with <code>ssh-keygen -R ALIAS</code>, then reconnect and verify the new key.</p>
           </details>
           <details class="docs-disclosure">
             <summary>Codex or Claude asks you to sign in again</summary>
@@ -578,9 +643,9 @@ devbox metrics export --format csv &gt; insights.csv</code></pre>
               <span>Cluster diagnostics</span>
               <button class="command-copy" type="button" data-copy-target="operator-command" aria-label="Copy cluster diagnostic commands">Copy</button>
             </div>
-            <pre><code id="operator-command">helm status devboxes -n {{ namespace }}
+            <pre><code id="operator-command">helm status devboxes -n {{ controller_namespace }}
 kubectl get deployment,service,pvc -n {{ namespace }}
-kubectl logs -n {{ namespace }} deployment/devboxes --tail=100
+kubectl logs -n {{ controller_namespace }} deployment/devboxes --tail=100
 kubectl get events -n {{ namespace }} --sort-by=.lastTimestamp</code></pre>
           </div>
         </section>
@@ -590,7 +655,7 @@ kubectl get events -n {{ namespace }} --sort-by=.lastTimestamp</code></pre>
             <h2 id="docs-finish-title">The shortest useful loop</h2>
             <p>Create, connect, detach, reconnect. Stop only when you want the compute back.</p>
           </div>
-          <a class="button button-primary" href="/">Create a devbox</a>
+          <a class="button button-primary" href="/{{ tenant_query }}">Create a devbox</a>
         </section>
       </article>
     </main>

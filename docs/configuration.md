@@ -42,6 +42,88 @@ master access token using a versioned, domain-separated HMAC. Set the field only
 existing controller Secret contains a dedicated key of at least 32 characters. Rotating the
 master token in derived mode, or rotating the dedicated key, revokes all issued CLI tokens.
 
+## Multi-tenancy
+
+Multi-tenancy is disabled by default. When enabled, the release namespace holds the
+controller while every configured tenant owns a separate workspace namespace.
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `tenancy.enabled` | `false` | Enable principal authorization and namespace-per-tenant operation |
+| `tenancy.defaultTenant` | `default` | Tenant selected for the master identity and legacy workspace/Insights adoption |
+| `tenancy.existingPrincipalSecret` | empty | Existing controller-namespace Secret containing configured principal tokens |
+| `tenancy.principalTokenMountPath` | `/var/run/secrets/devboxes/principals` | Read-only in-container Secret mount |
+| `tenancy.networkPolicy.enabled` | `true` | Allow only TCP/2222 ingress to managed workspace pods in tenant namespaces |
+| `tenancy.tenants[].id` | none | Stable lowercase tenant identifier used by API, CLI, labels, and telemetry |
+| `tenancy.tenants[].displayName` | none | Human-readable tenant name |
+| `tenancy.tenants[].namespace` | none | Dedicated Kubernetes namespace |
+| `tenancy.tenants[].createNamespace` | `false` | Create a Helm-retained namespace |
+| `tenancy.tenants[].namespaceLabels` | `{}` | Additional labels, including optional Pod Security labels |
+| `tenancy.tenants[].workspaceSecretName` | workspace default | Tenant-local Secret mounted into its workspaces |
+| `tenancy.tenants[].workspaceServiceAccountName` | workspace default | Tenant-local tokenless ServiceAccount |
+| `tenancy.tenants[].storageClass` | workspace default | Tenant-specific StorageClass |
+| `tenancy.tenants[].maxTtlHours` | controller maximum | Tenant TTL ceiling, never above the controller maximum |
+| `tenancy.tenants[].allowedPresets` | all presets | Non-empty tenant preset allowlist |
+| `tenancy.tenants[].allowedGpuProfiles` | installation catalog | GPU allowlist; `[]` permits none |
+| `tenancy.tenants[].defaultGpuProfile` | installation default when allowed | Optional tenant GPU default, included in its allowlist |
+| `tenancy.tenants[].allowedImageProfiles` | installation catalog | Custom-image allowlist; `[]` permits none |
+| `tenancy.tenants[].resourceQuota.enabled` | `true` when present | Render a tenant ResourceQuota |
+| `tenancy.tenants[].resourceQuota.hard` | none | Positive native Kubernetes quota quantities |
+| `tenancy.principals[].subject` | none | Stable principal identity stored in sessions and creation metadata |
+| `tenancy.principals[].displayName` | none | User-facing principal name |
+| `tenancy.principals[].tokenKey` | none | Key in `existingPrincipalSecret`, not a credential value |
+| `tenancy.principals[].defaultTenant` | first membership | Default selected tenant |
+| `tenancy.principals[].memberships[]` | none | Unique tenant and `viewer`, `member`, or `admin` role pairs |
+
+Example:
+
+```yaml
+tenancy:
+  enabled: true
+  defaultTenant: platform
+  existingPrincipalSecret: devboxes-principals
+  tenants:
+    - id: platform
+      displayName: Platform Engineering
+      namespace: devboxes-platform
+      createNamespace: true
+      workspaceSecretName: devboxes-platform-workspace
+      maxTtlHours: 72
+      allowedPresets: [small, medium]
+      allowedGpuProfiles: [nvidia-l4]
+      defaultGpuProfile: nvidia-l4
+      allowedImageProfiles: [nginx]
+      resourceQuota:
+        enabled: true
+        hard:
+          requests.cpu: "8"
+          requests.memory: 32Gi
+          requests.storage: 500Gi
+          count/deployments.apps: "10"
+    - id: research
+      displayName: Research
+      namespace: devboxes-research
+      createNamespace: true
+      workspaceSecretName: devboxes-research-workspace
+  principals:
+    - subject: alice@example.com
+      displayName: Alice
+      tokenKey: alice-token
+      defaultTenant: platform
+      memberships:
+        - tenant: platform
+          role: admin
+        - tenant: research
+          role: viewer
+```
+
+Tenant IDs, namespaces, principal subjects, Secret keys, memberships, TTL ceilings, quotas,
+and profile references receive both JSON-schema and controller startup validation. Principal
+tokens must each contain at least 32 characters, must be unique across identities, and are
+read only from the mounted Secret.
+Read [multi-tenancy](multi-tenancy.md) for provisioning, role semantics, NetworkPolicy
+limits, migration, and rollback.
+
 ## Workspace
 
 | Value | Default | Meaning |
@@ -54,7 +136,10 @@ master token in derived mode, or rotating the dedicated key, revokes all issued 
 | `workspace.imagePullSecret` | empty | Optional pull Secret for private image mirrors |
 | `workspace.serviceAccount.create` | `true` | Create a tokenless workspace ServiceAccount |
 
-The namespace must permit the workspace pod's documented `sudo` capability set. Kubernetes Pod Security `baseline` is compatible; `restricted` is not.
+Every workspace namespace must permit the documented `sudo` capability set. Kubernetes Pod
+Security `baseline` is compatible; `restricted` is not. In multi-tenant mode, each namespace
+also needs the configured workspace Secret and, when chart creation is disabled, the
+configured tokenless ServiceAccount.
 
 ## Custom image profiles
 

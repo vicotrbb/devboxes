@@ -108,6 +108,7 @@ class InsightsService:
             raw_days=settings.insights_retention_raw_days,
             hourly_days=settings.insights_retention_hourly_days,
             daily_days=settings.insights_retention_daily_days,
+            default_tenant_id=settings.default_tenant,
         )
         self._rates: dict[str, deque[float]] = defaultdict(deque)
         self._rate_lock = asyncio.Lock()
@@ -154,6 +155,7 @@ class InsightsService:
     async def ingest(
         self,
         *,
+        tenant_id: str = "default",
         instance_id: str,
         box_name: str,
         compressed_body: bytes,
@@ -170,6 +172,7 @@ class InsightsService:
             payload.update(_collector_metadata(batch))
             started = time.perf_counter()
             result = await self.store.ingest(
+                tenant_id=tenant_id,
                 instance_id=instance_id,
                 box_name=box_name,
                 batch_id=str(batch["batch_id"]),
@@ -282,6 +285,7 @@ class InsightsService:
         box_name: str | None = None,
         *,
         instance_id: str | None = None,
+        tenant_id: str = "default",
     ) -> dict[str, Any]:
         """Delete central history without touching any Kubernetes resources."""
         self._require_enabled()
@@ -290,9 +294,9 @@ class InsightsService:
         if instance_id is not None:
             _validate_instance_id(instance_id)
         count = (
-            await self.store.purge_instance(instance_id)
+            await self.store.purge_instance(instance_id, tenant_id)
             if instance_id is not None
-            else await self.store.purge_box(str(box_name))
+            else await self.store.purge_box(str(box_name), tenant_id)
         )
         database_bytes = await self.store.database_size()
         INSIGHTS_DATABASE_BYTES.set(database_bytes)
@@ -314,6 +318,7 @@ class InsightsService:
             },
             "box": box_name or "",
             "instance_id": instance_id,
+            "tenant": tenant_id,
             "purged_instances": count,
         }
 
@@ -329,10 +334,14 @@ class InsightsService:
         result["database_bytes"] = database_bytes
         return result
 
-    async def backup(self, destination: str | Path) -> None:
+    async def backup(
+        self,
+        destination: str | Path,
+        tenant_id: str | None = None,
+    ) -> None:
         """Create an authenticated, transactionally consistent SQLite snapshot."""
         self._require_enabled()
-        await self.store.backup(destination)
+        await self.store.backup(destination, tenant_id)
 
     def filters(
         self,
@@ -344,6 +353,7 @@ class InsightsService:
         model: str | None,
         repo: str | None,
         maximum_days: int,
+        tenant_id: str = "default",
         instance_id: str | None = None,
         group_by: str | None = None,
         bucket: str | None = None,
@@ -366,6 +376,7 @@ class InsightsService:
         return QueryFilters(
             since=start,
             until=end,
+            tenant_id=tenant_id,
             box=box,
             instance_id=instance_id,
             provider=provider,
@@ -488,6 +499,7 @@ class InsightsService:
             "schema_version": SCHEMA_VERSION,
             "generated_at": datetime.now(UTC).isoformat(),
             "enabled": True,
+            "tenant": filters.tenant_id,
             "effective_range": {
                 "since": filters.since.isoformat(),
                 "until": filters.until.isoformat(),

@@ -240,6 +240,25 @@ h3 {
   gap: var(--space-2);
 }
 
+.tenant-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.tenant-switcher select {
+  width: min(14rem, 24vw);
+  min-height: 2.2rem;
+  padding: 0.42rem 1.9rem 0.42rem 0.62rem;
+  border-color: var(--line);
+  background: var(--surface);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
 .cluster-state {
   display: inline-flex;
   align-items: center;
@@ -353,6 +372,20 @@ h3 {
   color: var(--primary-hover);
   font-size: 0.75rem;
   font-weight: 700;
+}
+
+.role-notice {
+  margin: calc(-1 * var(--space-2)) 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid oklch(0.79 0.075 76);
+  border-radius: var(--radius-md);
+  background: var(--warning-soft);
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.role-notice strong {
+  color: var(--ink);
 }
 
 .create-form {
@@ -1577,6 +1610,14 @@ kbd {
     display: none;
   }
 
+  .tenant-switcher > span {
+    display: none;
+  }
+
+  .tenant-switcher select {
+    width: 10rem;
+  }
+
   .app-main {
     padding: var(--space-6) var(--space-4) var(--space-7);
   }
@@ -1682,7 +1723,9 @@ kbd {
   }
 
   .app-header {
+    flex-wrap: wrap;
     gap: var(--space-2);
+    padding-block: var(--space-2);
   }
 
   .header-leading {
@@ -1695,6 +1738,10 @@ kbd {
 
   .nav-link {
     padding-inline: 0.5rem;
+  }
+
+  .tenant-switcher select {
+    width: 8.5rem;
   }
 
   .create-workbench {

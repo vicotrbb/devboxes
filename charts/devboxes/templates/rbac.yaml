@@ -1,3 +1,4 @@
+{{- if not .Values.tenancy.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -40,3 +41,52 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "devboxes.controllerServiceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- else }}
+{{- range $tenant := .Values.tenancy.tenants }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "devboxes.fullname" $ }}
+  namespace: {{ $tenant.namespace }}
+  labels:
+    {{- include "devboxes.labels" $ | nindent 4 }}
+    devboxes.bonalab.org/tenant: {{ $tenant.id | quote }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "delete", "get", "list", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "delete", "get", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete", "get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "devboxes.fullname" $ }}
+  namespace: {{ $tenant.namespace }}
+  labels:
+    {{- include "devboxes.labels" $ | nindent 4 }}
+    devboxes.bonalab.org/tenant: {{ $tenant.id | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "devboxes.fullname" $ }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "devboxes.controllerServiceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}

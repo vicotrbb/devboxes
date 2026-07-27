@@ -17,7 +17,7 @@ from kubernetes.client.exceptions import ApiException
 from kubernetes.utils.quantity import parse_quantity
 
 from .auth import Authenticator
-from .config import CustomImageProfile, GpuProfile, Settings
+from .config import CustomImageProfile, GpuProfile, Settings, TenantConfig
 from .models import (
     CreateDevboxRequest,
     CustomImageAllocation,
@@ -32,6 +32,7 @@ from .models import (
 from .resources import (
     ANNOTATION_AUTO_STOPPED_AT,
     ANNOTATION_CREATED_AT,
+    ANNOTATION_CREATED_BY,
     ANNOTATION_CUSTOM_IMAGE_CONFIG,
     ANNOTATION_CUSTOM_IMAGE_PROFILE,
     ANNOTATION_EXPIRES_AT,
@@ -48,6 +49,7 @@ from .resources import (
     ANNOTATION_TTL_HOURS,
     LABEL_MANAGED_BY,
     LABEL_NAME,
+    LABEL_TENANT,
     MANAGED_BY,
     PRESETS,
     build_deployment,
@@ -65,6 +67,10 @@ class DevboxNotFoundError(Exception):
 
 class DevboxConflictError(Exception):
     """Signal that a requested devbox name is already active."""
+
+
+class TenantQuotaExceededError(Exception):
+    """Signal that Kubernetes rejected work against a tenant ResourceQuota."""
 
 
 @dataclass
@@ -128,28 +134,48 @@ class DevboxManager:
             logger.info("loaded kubeconfig context %s", settings.kubeconfig_context or "current")
 
     async def ready(self) -> bool:
-        """Return whether the controller can list namespaced Deployments."""
+        """Return whether the controller can list Deployments in every tenant."""
         try:
-            await asyncio.to_thread(
-                self.apps.list_namespaced_deployment,
-                self.settings.namespace,
-                limit=1,
+            await asyncio.gather(
+                *[
+                    asyncio.to_thread(
+                        self.apps.list_namespaced_deployment,
+                        tenant.namespace,
+                        limit=1,
+                    )
+                    for tenant in self.settings.tenant_configs
+                ]
             )
         except ApiException:
             return False
         return True
 
-    async def create(self, request: CreateDevboxRequest) -> Devbox:
+    async def create(
+        self,
+        request: CreateDevboxRequest,
+        tenant: TenantConfig | None = None,
+        created_by: str | None = None,
+    ) -> Devbox:
         """Create compute, SSH, and persistent storage for a devbox."""
-        if request.ttl_hours > self.settings.max_ttl_hours:
-            raise ValueError(f"ttl_hours cannot exceed {self.settings.max_ttl_hours}")
+        tenant = tenant or self.settings.resolve_tenant(None)
+        maximum_ttl = self.settings.tenant_max_ttl_hours(tenant)
+        if request.ttl_hours > maximum_ttl:
+            raise ValueError(f"ttl_hours cannot exceed {maximum_ttl} for tenant {tenant.id!r}")
+        if request.preset not in tenant.allowed_presets:
+            available = ", ".join(preset.value for preset in tenant.allowed_presets)
+            raise ValueError(
+                f"preset {request.preset.value!r} is unavailable to tenant {tenant.id!r}; "
+                f"available presets: {available}"
+            )
         gpu_profile = (
-            self.settings.resolve_gpu_profile(request.gpu.profile)
+            self.settings.resolve_gpu_profile(request.gpu.profile, tenant)
             if request.gpu is not None
             else None
         )
         custom_image = (
-            self.settings.resolve_custom_image(request.image) if request.image is not None else None
+            self.settings.resolve_custom_image(request.image, tenant)
+            if request.image is not None
+            else None
         )
         if (
             custom_image is not None
@@ -163,8 +189,15 @@ class DevboxManager:
             )
 
         name = resource_name(request.name)
-        async with self._lock_lifecycle(name):
-            return await self._create_locked(request, gpu_profile, custom_image, name)
+        async with self._lock_lifecycle(f"{tenant.id}/{name}"):
+            return await self._create_locked(
+                request,
+                gpu_profile,
+                custom_image,
+                name,
+                tenant,
+                created_by,
+            )
 
     async def _create_locked(
         self,
@@ -172,16 +205,19 @@ class DevboxManager:
         gpu_profile: GpuProfile | None,
         custom_image: CustomImageProfile | None,
         name: str,
+        tenant: TenantConfig,
+        created_by: str | None,
     ) -> Devbox:
         """Create a devbox while holding its lifecycle lock."""
-        if await self._deployment_exists(name):
+        if await self._deployment_exists(name, tenant, include_unmanaged=True):
             raise DevboxConflictError(f"devbox {request.name!r} already exists")
 
         pvc_name = f"{name}-home"
+        include_tenant_label = self.settings.multi_tenancy_enabled
         desired_storage = PRESETS[request.preset]["storage"]
-        existing_pvc = await self._read_pvc(pvc_name)
+        existing_pvc = await self._read_pvc(pvc_name, tenant)
         instance_id = (
-            await self._instance_id(pvc_name, existing_pvc)
+            await self._instance_id(pvc_name, existing_pvc, tenant)
             if self.settings.insights_enabled
             else None
         )
@@ -189,15 +225,26 @@ class DevboxManager:
         if existing_pvc is None:
             pvc = build_pvc(
                 request,
-                self.settings.namespace,
-                self.settings.storage_class,
+                tenant.namespace,
+                self.settings.tenant_storage_class(tenant),
                 instance_id,
+                tenant.id,
+                created_by,
+                include_tenant_label,
             )
-            await asyncio.to_thread(
-                self.core.create_namespaced_persistent_volume_claim,
-                self.settings.namespace,
-                pvc,
-            )
+            try:
+                await asyncio.to_thread(
+                    self.core.create_namespaced_persistent_volume_claim,
+                    tenant.namespace,
+                    pvc,
+                )
+            except ApiException as error:
+                self._raise_quota(error, tenant)
+                if error.status == 409:
+                    raise DevboxConflictError(
+                        f"persistent volume claim {pvc_name!r} already exists"
+                    ) from error
+                raise
         else:
             current_storage = str(
                 (existing_pvc.spec.resources.requests or {}).get("storage", desired_storage)
@@ -206,14 +253,14 @@ class DevboxManager:
                 await asyncio.to_thread(
                     self.core.patch_namespaced_persistent_volume_claim,
                     pvc_name,
-                    self.settings.namespace,
+                    tenant.namespace,
                     {"spec": {"resources": {"requests": {"storage": desired_storage}}}},
                 )
             else:
                 storage_size = current_storage
 
         insights_credential = (
-            self.authenticator.issue_insights_token(instance_id, request.name)
+            self.authenticator.issue_insights_token(instance_id, request.name, tenant.id)
             if instance_id is not None
             else None
         )
@@ -223,13 +270,14 @@ class DevboxManager:
                 request.name,
                 instance_id,
                 insights_credential,
+                tenant,
             )
         deployment = build_deployment(
             request,
-            self.settings.namespace,
+            tenant.namespace,
             self.settings.workspace_image,
-            self.settings.workspace_secret_name,
-            self.settings.workspace_service_account_name,
+            self.settings.tenant_workspace_secret_name(tenant),
+            self.settings.tenant_workspace_service_account_name(tenant),
             self.settings.workspace_priority_class,
             self.settings.image_pull_secret,
             gpu_profile=gpu_profile,
@@ -243,61 +291,86 @@ class DevboxManager:
             insights_repository_depth=self.settings.insights_agent_repository_depth,
             insights_max_queue_bytes=self.settings.insights_agent_max_queue_bytes,
             insights_max_queue_age_seconds=self.settings.insights_agent_max_queue_age_seconds,
+            tenant_id=tenant.id,
+            created_by=created_by,
+            include_tenant_label=include_tenant_label,
         )
         deployment["metadata"]["annotations"][ANNOTATION_STORAGE] = storage_size
         service = build_service(
             request,
-            self.settings.namespace,
+            tenant.namespace,
             self.settings.workspace_service_type,
             self.settings.workspace_service_annotations,
             None,
             self.settings.workspace_load_balancer_class,
             self.settings.workspace_external_traffic_policy,
             self.settings.workspace_load_balancer_source_ranges,
+            tenant.id,
+            created_by,
+            include_tenant_label,
         )
+        deployment_created = False
         try:
             await asyncio.to_thread(
                 self.apps.create_namespaced_deployment,
-                self.settings.namespace,
+                tenant.namespace,
                 deployment,
             )
+            deployment_created = True
             await asyncio.to_thread(
                 self.core.create_namespaced_service,
-                self.settings.namespace,
+                tenant.namespace,
                 service,
             )
-        except Exception:
-            await self._delete_deployment(name)
+        except ApiException as error:
+            if deployment_created:
+                await self._delete_deployment(name, tenant)
             if insights_secret_name:
-                await self._delete_secret(insights_secret_name)
+                await self._delete_secret(insights_secret_name, tenant)
+            self._raise_quota(error, tenant)
+            if error.status == 409:
+                raise DevboxConflictError(
+                    f"a Kubernetes resource for devbox {request.name!r} already exists"
+                ) from error
             raise
-        return await self.get(request.name)
+        except Exception:
+            if deployment_created:
+                await self._delete_deployment(name, tenant)
+            if insights_secret_name:
+                await self._delete_secret(insights_secret_name, tenant)
+            raise
+        return await self.get(request.name, tenant)
 
-    async def list(self) -> list[Devbox]:
+    async def list(self, tenant: TenantConfig | None = None) -> list[Devbox]:
         """List managed devboxes in reverse creation order."""
+        tenant = tenant or self.settings.resolve_tenant(None)
         selector = f"{LABEL_MANAGED_BY}={MANAGED_BY}"
         deployments, services, pods = await asyncio.gather(
             asyncio.to_thread(
                 self.apps.list_namespaced_deployment,
-                self.settings.namespace,
+                tenant.namespace,
                 label_selector=selector,
             ),
             asyncio.to_thread(
                 self.core.list_namespaced_service,
-                self.settings.namespace,
+                tenant.namespace,
                 label_selector=selector,
             ),
             asyncio.to_thread(
                 self.core.list_namespaced_pod,
-                self.settings.namespace,
+                tenant.namespace,
                 label_selector=selector,
             ),
         )
-        service_by_name = {item.metadata.labels.get(LABEL_NAME): item for item in services.items}
+        service_by_name = {
+            item.metadata.labels.get(LABEL_NAME): item
+            for item in services.items
+            if self._belongs_to_tenant(item, tenant)
+        }
         pod_by_name: dict[str, Any] = {}
         for item in pods.items:
             box_name = item.metadata.labels.get(LABEL_NAME)
-            if box_name:
+            if box_name and self._belongs_to_tenant(item, tenant):
                 pod_by_name[box_name] = item
 
         result = [
@@ -305,29 +378,32 @@ class DevboxManager:
                 deployment,
                 service_by_name.get(deployment.metadata.labels.get(LABEL_NAME)),
                 pod_by_name.get(deployment.metadata.labels.get(LABEL_NAME)),
+                tenant,
             )
             for deployment in deployments.items
+            if self._belongs_to_tenant(deployment, tenant)
         ]
         return sorted(result, key=lambda item: item.created_at, reverse=True)
 
-    async def get(self, name: str) -> Devbox:
+    async def get(self, name: str, tenant: TenantConfig | None = None) -> Devbox:
         """Return the current model for one managed devbox."""
+        tenant = tenant or self.settings.resolve_tenant(None)
         resource = resource_name(name)
         try:
             deployment, service, pods = await asyncio.gather(
                 asyncio.to_thread(
                     self.apps.read_namespaced_deployment,
                     resource,
-                    self.settings.namespace,
+                    tenant.namespace,
                 ),
                 asyncio.to_thread(
                     self.core.read_namespaced_service,
                     f"{resource}-ssh",
-                    self.settings.namespace,
+                    tenant.namespace,
                 ),
                 asyncio.to_thread(
                     self.core.list_namespaced_pod,
-                    self.settings.namespace,
+                    tenant.namespace,
                     label_selector=f"{LABEL_NAME}={name}",
                 ),
             )
@@ -335,96 +411,142 @@ class DevboxManager:
             if error.status == 404:
                 raise DevboxNotFoundError(name) from error
             raise
-        pod = pods.items[0] if pods.items else None
-        return self._to_model(deployment, service, pod)
+        if not self._belongs_to_tenant(deployment, tenant):
+            raise DevboxNotFoundError(name)
+        service = service if self._belongs_to_tenant(service, tenant) else None
+        pod = next(
+            (item for item in pods.items if self._belongs_to_tenant(item, tenant)),
+            None,
+        )
+        return self._to_model(deployment, service, pod, tenant)
 
-    async def scale(self, name: str, replicas: int) -> Devbox:
+    async def scale(
+        self,
+        name: str,
+        replicas: int,
+        tenant: TenantConfig | None = None,
+    ) -> Devbox:
         """Start or stop a devbox while preserving its home volume."""
+        tenant = tenant or self.settings.resolve_tenant(None)
         resource = resource_name(name)
-        async with self._lock_lifecycle(resource):
-            return await self._scale_locked(name, resource, replicas)
+        async with self._lock_lifecycle(f"{tenant.id}/{resource}"):
+            return await self._scale_locked(name, resource, replicas, tenant)
 
-    async def _scale_locked(self, name: str, resource: str, replicas: int) -> Devbox:
+    async def _scale_locked(
+        self,
+        name: str,
+        resource: str,
+        replicas: int,
+        tenant: TenantConfig,
+    ) -> Devbox:
         """Scale a devbox while holding its lifecycle lock."""
         try:
+            deployment = await asyncio.to_thread(
+                self.apps.read_namespaced_deployment,
+                resource,
+                tenant.namespace,
+            )
+            if not self._belongs_to_tenant(deployment, tenant):
+                raise DevboxNotFoundError(name)
             if replicas == 1:
-                deployment = await asyncio.to_thread(
-                    self.apps.read_namespaced_deployment,
-                    resource,
-                    self.settings.namespace,
-                )
-                deployment = await self._prepare_insights_template(deployment)
+                deployment = await self._prepare_insights_template(deployment, tenant)
                 annotations = deployment.metadata.annotations or {}
                 ttl_hours = _ttl_hours(
                     annotations.get(ANNOTATION_TTL_HOURS),
                     self.settings.default_ttl_hours,
-                    self.settings.max_ttl_hours,
+                    self.settings.tenant_max_ttl_hours(tenant),
                 )
+                metadata_patch: dict[str, Any] = {
+                    "annotations": {
+                        ANNOTATION_AUTO_STOPPED_AT: None,
+                        ANNOTATION_EXPIRES_AT: (
+                            datetime.now(UTC) + timedelta(hours=ttl_hours)
+                        ).isoformat(),
+                    }
+                }
+                resource_version = getattr(deployment.metadata, "resource_version", None)
+                if resource_version:
+                    metadata_patch["resourceVersion"] = resource_version
                 await asyncio.to_thread(
                     self.apps.patch_namespaced_deployment,
                     resource,
-                    self.settings.namespace,
+                    tenant.namespace,
                     {
-                        "metadata": {
-                            "annotations": {
-                                ANNOTATION_AUTO_STOPPED_AT: None,
-                                ANNOTATION_EXPIRES_AT: (
-                                    datetime.now(UTC) + timedelta(hours=ttl_hours)
-                                ).isoformat(),
-                            }
-                        },
+                        "metadata": metadata_patch,
                         "spec": {"replicas": 1},
                     },
                 )
             else:
+                scale_patch: dict[str, Any] = {"spec": {"replicas": replicas}}
+                resource_version = getattr(deployment.metadata, "resource_version", None)
+                if resource_version:
+                    scale_patch["metadata"] = {"resourceVersion": resource_version}
                 await asyncio.to_thread(
                     self.apps.patch_namespaced_deployment_scale,
                     resource,
-                    self.settings.namespace,
-                    {"spec": {"replicas": replicas}},
+                    tenant.namespace,
+                    scale_patch,
                 )
         except ApiException as error:
             if error.status == 404:
                 raise DevboxNotFoundError(name) from error
+            self._raise_quota(error, tenant)
             raise
-        return await self.get(name)
+        return await self.get(name, tenant)
 
     async def reconcile_insights(self) -> builtins.list[str]:
         """Reconcile identity and safe collector state without restarting active workspaces."""
         if not self.settings.insights_enabled:
             return []
+        changed: builtins.list[str] = []
+        for tenant in self.settings.tenant_configs:
+            changed.extend(await self._reconcile_tenant_insights(tenant))
+        return changed
+
+    async def _reconcile_tenant_insights(
+        self,
+        tenant: TenantConfig,
+    ) -> builtins.list[str]:
+        """Reconcile Insights inside one tenant namespace."""
         selector = f"{LABEL_MANAGED_BY}={MANAGED_BY}"
         deployments = await asyncio.to_thread(
             self.apps.list_namespaced_deployment,
-            self.settings.namespace,
+            tenant.namespace,
             label_selector=selector,
         )
         changed: builtins.list[str] = []
         for listed_deployment in deployments.items:
+            if not self._belongs_to_tenant(listed_deployment, tenant):
+                continue
             name = listed_deployment.metadata.labels.get(LABEL_NAME)
             if not name:
                 continue
             resource = resource_name(name)
-            async with self._lock_lifecycle(resource):
+            async with self._lock_lifecycle(f"{tenant.id}/{resource}"):
                 try:
                     deployment = await asyncio.to_thread(
                         self.apps.read_namespaced_deployment,
                         resource,
-                        self.settings.namespace,
+                        tenant.namespace,
                     )
                 except ApiException as error:
                     if error.status == 404:
                         continue
                     raise
+                if not self._belongs_to_tenant(deployment, tenant):
+                    continue
                 if _deletion_in_progress(deployment):
                     continue
                 if (deployment.spec.replicas or 0) == 0:
-                    prepared = await self._prepare_insights_template(deployment)
+                    prepared = await self._prepare_insights_template(deployment, tenant)
                     if prepared is not deployment:
-                        changed.append(name)
+                        changed.append(self._reported_name(tenant, name))
                 else:
                     annotations = deployment.metadata.annotations or {}
-                    desired, instance_id = await self._desired_insights_deployment(deployment)
+                    desired, instance_id = await self._desired_insights_deployment(
+                        deployment,
+                        tenant,
+                    )
                     if not _insights_template_matches(deployment, desired) and (
                         annotations.get(ANNOTATION_INSIGHTS_STATE)
                         != InsightsState.RESTART_REQUIRED.value
@@ -433,7 +555,7 @@ class DevboxManager:
                         await asyncio.to_thread(
                             self.apps.patch_namespaced_deployment,
                             deployment.metadata.name,
-                            self.settings.namespace,
+                            tenant.namespace,
                             {
                                 "metadata": {
                                     "annotations": {
@@ -445,22 +567,28 @@ class DevboxManager:
                                 }
                             },
                         )
-                        changed.append(name)
+                        changed.append(self._reported_name(tenant, name))
         return changed
 
-    async def delete(self, name: str, purge: bool) -> DeleteResult:
+    async def delete(
+        self,
+        name: str,
+        purge: bool,
+        tenant: TenantConfig | None = None,
+    ) -> DeleteResult:
         """Delete compute and SSH resources, optionally deleting storage."""
+        tenant = tenant or self.settings.resolve_tenant(None)
         resource = resource_name(name)
-        async with self._lock_lifecycle(resource):
-            if not await self._deployment_exists(resource):
+        async with self._lock_lifecycle(f"{tenant.id}/{resource}"):
+            if not await self._deployment_exists(resource, tenant):
                 raise DevboxNotFoundError(name)
             await asyncio.gather(
-                self._delete_deployment(resource),
-                self._delete_service(f"{resource}-ssh"),
-                self._delete_secret(f"{resource}-insights"),
+                self._delete_deployment(resource, tenant),
+                self._delete_service(f"{resource}-ssh", tenant),
+                self._delete_secret(f"{resource}-insights", tenant),
             )
             if purge:
-                await self._delete_pvc(f"{resource}-home")
+                await self._delete_pvc(f"{resource}-home", tenant)
             return DeleteResult(
                 name=name,
                 purged=purge,
@@ -475,47 +603,94 @@ class DevboxManager:
         """Stop every active devbox whose TTL has expired."""
         now = datetime.now(UTC)
         stopped: builtins.list[str] = []
-        for box in await self.list():
-            if box.state is not DevboxState.STOPPED and box.expires_at <= now:
-                resource = resource_name(box.name)
-                await asyncio.to_thread(
-                    self.apps.patch_namespaced_deployment,
-                    resource,
-                    self.settings.namespace,
-                    {
-                        "metadata": {"annotations": {ANNOTATION_AUTO_STOPPED_AT: now.isoformat()}},
-                        "spec": {"replicas": 0},
-                    },
-                )
-                stopped.append(box.name)
+        for tenant in self.settings.tenant_configs:
+            for box in await self.list(tenant):
+                if box.state is not DevboxState.STOPPED and box.expires_at <= now:
+                    resource = resource_name(box.name)
+                    async with self._lock_lifecycle(f"{tenant.id}/{resource}"):
+                        try:
+                            deployment = await asyncio.to_thread(
+                                self.apps.read_namespaced_deployment,
+                                resource,
+                                tenant.namespace,
+                            )
+                        except ApiException as error:
+                            if error.status == 404:
+                                continue
+                            raise
+                        if not self._belongs_to_tenant(deployment, tenant):
+                            continue
+                        annotations = deployment.metadata.annotations or {}
+                        current_expiry = _parse_datetime(
+                            annotations.get(ANNOTATION_EXPIRES_AT),
+                            deployment.metadata.creation_timestamp,
+                        )
+                        if (deployment.spec.replicas or 0) == 0 or current_expiry > now:
+                            continue
+                        metadata_patch: dict[str, Any] = {
+                            "annotations": {ANNOTATION_AUTO_STOPPED_AT: now.isoformat()}
+                        }
+                        resource_version = getattr(
+                            deployment.metadata,
+                            "resource_version",
+                            None,
+                        )
+                        if resource_version:
+                            metadata_patch["resourceVersion"] = resource_version
+                        await asyncio.to_thread(
+                            self.apps.patch_namespaced_deployment,
+                            resource,
+                            tenant.namespace,
+                            {
+                                "metadata": metadata_patch,
+                                "spec": {"replicas": 0},
+                            },
+                        )
+                        stopped.append(self._reported_name(tenant, box.name))
         return stopped
 
-    async def _deployment_exists(self, name: str) -> bool:
+    async def _deployment_exists(
+        self,
+        name: str,
+        tenant: TenantConfig,
+        *,
+        include_unmanaged: bool = False,
+    ) -> bool:
         try:
-            await asyncio.to_thread(
+            deployment = await asyncio.to_thread(
                 self.apps.read_namespaced_deployment,
                 name,
-                self.settings.namespace,
+                tenant.namespace,
             )
         except ApiException as error:
             if error.status == 404:
                 return False
             raise
-        return True
+        return include_unmanaged or self._belongs_to_tenant(deployment, tenant)
 
-    async def _read_pvc(self, name: str) -> Any | None:
+    async def _read_pvc(self, name: str, tenant: TenantConfig) -> Any | None:
         try:
-            return await asyncio.to_thread(
+            pvc = await asyncio.to_thread(
                 self.core.read_namespaced_persistent_volume_claim,
                 name,
-                self.settings.namespace,
+                tenant.namespace,
             )
         except ApiException as error:
             if error.status == 404:
                 return None
             raise
+        if not self._belongs_to_tenant(pvc, tenant):
+            raise DevboxConflictError(
+                f"persistent volume claim {name!r} is not owned by tenant {tenant.id!r}"
+            )
+        return pvc
 
-    async def _instance_id(self, pvc_name: str, pvc: Any | None) -> str:
+    async def _instance_id(
+        self,
+        pvc_name: str,
+        pvc: Any | None,
+        tenant: TenantConfig,
+    ) -> str:
         if pvc is not None:
             annotations = getattr(getattr(pvc, "metadata", None), "annotations", None) or {}
             candidate = annotations.get(ANNOTATION_INSTANCE_ID)
@@ -526,7 +701,7 @@ class DevboxManager:
             await asyncio.to_thread(
                 self.core.patch_namespaced_persistent_volume_claim,
                 pvc_name,
-                self.settings.namespace,
+                tenant.namespace,
                 {"metadata": {"annotations": {ANNOTATION_INSTANCE_ID: instance_id}}},
             )
         return instance_id
@@ -536,6 +711,7 @@ class DevboxManager:
         box_name: str,
         instance_id: str,
         credential: str,
+        tenant: TenantConfig,
     ) -> str:
         secret_name = f"{resource_name(box_name)}-insights"
         body = {
@@ -543,10 +719,11 @@ class DevboxManager:
             "kind": "Secret",
             "metadata": {
                 "name": secret_name,
-                "namespace": self.settings.namespace,
+                "namespace": tenant.namespace,
                 "labels": {
                     LABEL_MANAGED_BY: MANAGED_BY,
                     LABEL_NAME: box_name,
+                    **({LABEL_TENANT: tenant.id} if self.settings.multi_tenancy_enabled else {}),
                 },
                 "annotations": {ANNOTATION_INSTANCE_ID: instance_id},
             },
@@ -557,17 +734,21 @@ class DevboxManager:
             existing = await asyncio.to_thread(
                 self.core.read_namespaced_secret,
                 secret_name,
-                self.settings.namespace,
+                tenant.namespace,
             )
         except ApiException as error:
             if error.status != 404:
                 raise
             await asyncio.to_thread(
                 self.core.create_namespaced_secret,
-                self.settings.namespace,
+                tenant.namespace,
                 body,
             )
         else:
+            if not self._belongs_to_tenant(existing, tenant):
+                raise DevboxConflictError(
+                    f"Insights Secret {secret_name!r} is not owned by tenant {tenant.id!r}"
+                )
             annotations = getattr(getattr(existing, "metadata", None), "annotations", None) or {}
             data = getattr(existing, "data", None)
             encoded = data.get("credential") if isinstance(data, dict) else None
@@ -581,7 +762,7 @@ class DevboxManager:
                 await asyncio.to_thread(
                     self.core.patch_namespaced_secret,
                     secret_name,
-                    self.settings.namespace,
+                    tenant.namespace,
                     {
                         "metadata": {"annotations": {ANNOTATION_INSTANCE_ID: instance_id}},
                         "stringData": {"credential": credential},
@@ -589,10 +770,14 @@ class DevboxManager:
                 )
         return secret_name
 
-    async def _prepare_insights_template(self, deployment: Any) -> Any:
+    async def _prepare_insights_template(
+        self,
+        deployment: Any,
+        tenant: TenantConfig,
+    ) -> Any:
         if not self.settings.insights_enabled:
             return deployment
-        desired, instance_id = await self._desired_insights_deployment(deployment)
+        desired, instance_id = await self._desired_insights_deployment(deployment, tenant)
         annotations = deployment.metadata.annotations or {}
         if _insights_template_matches(deployment, desired):
             if annotations.get(ANNOTATION_INSIGHTS_STATE) == InsightsState.COLLECTING.value:
@@ -600,7 +785,7 @@ class DevboxManager:
             await asyncio.to_thread(
                 self.apps.patch_namespaced_deployment,
                 deployment.metadata.name,
-                self.settings.namespace,
+                tenant.namespace,
                 {
                     "metadata": {
                         "annotations": {
@@ -613,12 +798,12 @@ class DevboxManager:
             return await asyncio.to_thread(
                 self.apps.read_namespaced_deployment,
                 deployment.metadata.name,
-                self.settings.namespace,
+                tenant.namespace,
             )
         await asyncio.to_thread(
             self.apps.patch_namespaced_deployment,
             deployment.metadata.name,
-            self.settings.namespace,
+            tenant.namespace,
             {
                 "metadata": {
                     "annotations": {
@@ -635,36 +820,45 @@ class DevboxManager:
         return await asyncio.to_thread(
             self.apps.read_namespaced_deployment,
             deployment.metadata.name,
-            self.settings.namespace,
+            tenant.namespace,
         )
 
-    async def _desired_insights_deployment(self, deployment: Any) -> tuple[dict[str, Any], str]:
+    async def _desired_insights_deployment(
+        self,
+        deployment: Any,
+        tenant: TenantConfig,
+    ) -> tuple[dict[str, Any], str]:
         annotations = deployment.metadata.annotations or {}
         name = deployment.metadata.labels[LABEL_NAME]
         pvc_name = f"{resource_name(name)}-home"
-        pvc = await self._read_pvc(pvc_name)
-        instance_id = await self._instance_id(pvc_name, pvc)
+        pvc = await self._read_pvc(pvc_name, tenant)
+        instance_id = await self._instance_id(pvc_name, pvc, tenant)
         request = CreateDevboxRequest(
             name=name,
             preset=Preset(annotations.get(ANNOTATION_PRESET, Preset.SMALL.value)),
             ttl_hours=_ttl_hours(
                 annotations.get(ANNOTATION_TTL_HOURS),
                 self.settings.default_ttl_hours,
-                self.settings.max_ttl_hours,
+                self.settings.tenant_max_ttl_hours(tenant),
             ),
             repository=annotations.get(ANNOTATION_REPOSITORY),
             image=annotations.get(ANNOTATION_CUSTOM_IMAGE_PROFILE),
         )
         gpu_profile = _resolved_gpu_profile(annotations, self.settings)
         custom_image = _resolved_custom_image(annotations, self.settings)
-        credential = self.authenticator.issue_insights_token(instance_id, name)
-        secret_name = await self._ensure_insights_secret(name, instance_id, credential)
+        credential = self.authenticator.issue_insights_token(instance_id, name, tenant.id)
+        secret_name = await self._ensure_insights_secret(
+            name,
+            instance_id,
+            credential,
+            tenant,
+        )
         desired = build_deployment(
             request,
-            self.settings.namespace,
+            tenant.namespace,
             self.settings.workspace_image,
-            self.settings.workspace_secret_name,
-            self.settings.workspace_service_account_name,
+            self.settings.tenant_workspace_secret_name(tenant),
+            self.settings.tenant_workspace_service_account_name(tenant),
             self.settings.workspace_priority_class,
             self.settings.image_pull_secret,
             gpu_profile=gpu_profile,
@@ -678,38 +872,41 @@ class DevboxManager:
             insights_repository_depth=self.settings.insights_agent_repository_depth,
             insights_max_queue_bytes=self.settings.insights_agent_max_queue_bytes,
             insights_max_queue_age_seconds=self.settings.insights_agent_max_queue_age_seconds,
+            tenant_id=tenant.id,
+            created_by=annotations.get(ANNOTATION_CREATED_BY),
+            include_tenant_label=self.settings.multi_tenancy_enabled,
         )
         return desired, instance_id
 
-    async def _delete_deployment(self, name: str) -> None:
+    async def _delete_deployment(self, name: str, tenant: TenantConfig) -> None:
         await self._ignore_not_found(
             self.apps.delete_namespaced_deployment,
             name,
-            self.settings.namespace,
+            tenant.namespace,
             body=client.V1DeleteOptions(propagation_policy="Foreground"),
         )
 
-    async def _delete_service(self, name: str) -> None:
+    async def _delete_service(self, name: str, tenant: TenantConfig) -> None:
         await self._ignore_not_found(
             self.core.delete_namespaced_service,
             name,
-            self.settings.namespace,
+            tenant.namespace,
             body=client.V1DeleteOptions(),
         )
 
-    async def _delete_pvc(self, name: str) -> None:
+    async def _delete_pvc(self, name: str, tenant: TenantConfig) -> None:
         await self._ignore_not_found(
             self.core.delete_namespaced_persistent_volume_claim,
             name,
-            self.settings.namespace,
+            tenant.namespace,
             body=client.V1DeleteOptions(),
         )
 
-    async def _delete_secret(self, name: str) -> None:
+    async def _delete_secret(self, name: str, tenant: TenantConfig) -> None:
         await self._ignore_not_found(
             self.core.delete_namespaced_secret,
             name,
-            self.settings.namespace,
+            tenant.namespace,
             body=client.V1DeleteOptions(),
         )
 
@@ -721,7 +918,43 @@ class DevboxManager:
             if error.status != 404:
                 raise
 
-    def _to_model(self, deployment: Any, service: Any | None, pod: Any | None) -> Devbox:
+    def _belongs_to_tenant(self, resource: Any, tenant: TenantConfig) -> bool:
+        """Enforce tenant ownership labels while admitting the legacy default namespace."""
+        raw_labels = getattr(getattr(resource, "metadata", None), "labels", None)
+        labels = raw_labels if isinstance(raw_labels, dict) else {}
+        if labels.get(LABEL_MANAGED_BY) != MANAGED_BY:
+            return False
+        labeled_tenant = labels.get(LABEL_TENANT)
+        if labeled_tenant is not None:
+            return bool(labeled_tenant == tenant.id)
+        return (
+            tenant.id == self.settings.default_tenant
+            and tenant.namespace == self.settings.namespace
+        )
+
+    def _reported_name(self, tenant: TenantConfig, name: str) -> str:
+        """Keep single-tenant maintenance output backward compatible."""
+        return f"{tenant.id}/{name}" if self.settings.multi_tenancy_enabled else name
+
+    @staticmethod
+    def _raise_quota(error: ApiException, tenant: TenantConfig) -> None:
+        """Translate Kubernetes quota admission into a stable tenant-facing error."""
+        detail = " ".join(
+            value for value in [str(error.reason or ""), str(error.body or "")] if value
+        )
+        if error.status == 403 and "quota" in detail.lower():
+            raise TenantQuotaExceededError(
+                f"tenant {tenant.id!r} exceeded its Kubernetes ResourceQuota"
+            ) from error
+
+    def _to_model(
+        self,
+        deployment: Any,
+        service: Any | None,
+        pod: Any | None,
+        tenant: TenantConfig | None = None,
+    ) -> Devbox:
+        tenant = tenant or self.settings.resolve_tenant(None)
         annotations = deployment.metadata.annotations or {}
         box_name = deployment.metadata.labels[LABEL_NAME]
         created_at = _parse_datetime(
@@ -732,10 +965,12 @@ class DevboxManager:
         desired = deployment.spec.replicas or 0
         pod_ready = _pod_ready(pod)
         host, port = _service_endpoint(service, self.settings.workspace_service_host)
-        state, message = _state(desired, pod, pod_ready, host)
+        state, message = _state(desired, pod, pod_ready, host, deployment)
         restarts = sum(status.restart_count or 0 for status in _container_statuses(pod))
         return Devbox(
             name=box_name,
+            tenant=tenant.id,
+            created_by=annotations.get(ANNOTATION_CREATED_BY),
             state=state,
             preset=preset,
             created_at=created_at,
@@ -822,11 +1057,36 @@ def _state(
     pod: Any | None,
     pod_ready: bool,
     host: str | None,
+    deployment: Any | None = None,
 ) -> tuple[DevboxState, str | None]:
     if desired == 0:
         return DevboxState.STOPPED, "Compute stopped; home volume retained"
     if pod_ready and host:
         return DevboxState.READY, None
+    replica_failure = next(
+        (
+            condition
+            for condition in (
+                getattr(getattr(deployment, "status", None), "conditions", None) or []
+            )
+            if getattr(condition, "type", None) == "ReplicaFailure"
+            and getattr(condition, "status", None) == "True"
+        ),
+        None,
+    )
+    if replica_failure is not None:
+        detail = str(getattr(replica_failure, "message", "") or "")
+        if "quota" in detail.lower():
+            return (
+                DevboxState.DEGRADED,
+                f"Tenant quota blocked this workspace: {detail[:280]}",
+            )
+        return (
+            DevboxState.DEGRADED,
+            f"Workspace replica creation failed: {detail[:280]}"
+            if detail
+            else "Workspace replica creation failed",
+        )
     if pod is not None:
         phase = getattr(pod.status, "phase", None)
         waiting_reasons = {
@@ -853,9 +1113,12 @@ def _state(
             None,
         )
         if scheduling_condition is not None:
-            detail = getattr(scheduling_condition, "message", None)
-            if detail:
-                return DevboxState.STARTING, f"Scheduling blocked: {str(detail)[:320]}"
+            scheduling_detail = getattr(scheduling_condition, "message", None)
+            if scheduling_detail:
+                return (
+                    DevboxState.STARTING,
+                    f"Scheduling blocked: {str(scheduling_detail)[:320]}",
+                )
             return DevboxState.STARTING, "Waiting for a node with the requested resources"
     if pod_ready:
         return DevboxState.STARTING, "Waiting for an SSH service address"

@@ -109,6 +109,8 @@ jobs:
         run: scripts/test-helm-insights.sh
       - name: Helm custom image contracts
         run: scripts/test-helm-images.sh
+      - name: Helm multi-tenancy contracts
+        run: scripts/test-helm-tenancy.sh
       - name: Render LoadBalancer installation
         run: helm template devboxes charts/devboxes --namespace devboxes > /tmp/devboxes.yaml
       - name: Validate Kubernetes resources

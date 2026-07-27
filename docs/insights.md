@@ -1,6 +1,9 @@
 # Insights
 
-Insights is an opt-in, single-operator view of locally emitted AI metrics and aggregate Git activity. It is available at `/insights`, through `/api/v1/insights/*`, and through `devbox metrics`. It does not reuse the Prometheus `/metrics` route.
+Insights is an opt-in view of locally emitted AI metrics and aggregate Git activity. It is
+available at `/insights`, through `/api/v1/insights/*`, and through `devbox metrics`. It
+does not reuse the Prometheus `/metrics` route. In multi-tenant installations, every ingest,
+query, export, and purge is restricted to one authorized tenant.
 
 ## Enable Insights
 
@@ -71,11 +74,21 @@ Both agent and controller use an attribute allowlist for provider, model, auth m
 
 The pipeline drops email addresses, user, account, and organization identifiers, session IDs, prompts, responses, lengths, commands, paths, file names, URLs, tool inputs and outputs, error bodies, raw API bodies, logs, traces, and arbitrary attributes.
 
-Devboxes remains a single-operator system without secure per-user attribution or tenant isolation. Metrics are self-reported by software running in a workspace controlled by the devbox user, so that user can disable, alter, or fabricate them. Use Insights for personal operational visibility, not compliance, billing, performance evaluation, or adversarial auditing.
+Multi-tenancy isolates Insights storage and access by tenant, but metrics remain
+self-reported by software running in a workspace controlled by the devbox user. That user
+can disable, alter, or fabricate them. `created_by` is operational metadata, not proof that a
+specific person produced a metric. Use Insights for operational visibility, not compliance,
+billing, performance evaluation, or adversarial auditing.
 
 ## Identity, rollout, and key rotation
 
 The controller stores a UUID instance ID on both the workspace Deployment and home PVC. Deleting a workspace while retaining its PVC preserves the instance ID. Purging the PVC and recreating the workspace creates a new ID.
+
+With multi-tenancy enabled, every newly issued workspace ingest credential and every central
+database row carries the tenant ID. Same-named boxes in different tenants have independent
+instance histories. Legacy v1 ingest credentials and database rows are assigned to
+`tenancy.defaultTenant`, so select that tenant deliberately and back up the database before
+enabling tenancy.
 
 An upgrade does not restart active legacy workspaces. They report `restart_required` until a normal stop and start installs the sidecar. Stopped templates are reconciled immediately, and every start reconciles a stale template before scaling it up.
 
@@ -98,7 +111,10 @@ curl -fsS \
   "$DEVBOX_URL/api/v1/insights/export?format=sqlite"
 ```
 
-This uses the [SQLite online backup API](https://www.sqlite.org/backup.html). Never copy only a live `.db` file while WAL mode is active.
+This uses the [SQLite online backup API](https://www.sqlite.org/backup.html). In a
+multi-tenant installation, the returned database is a sanitized backup containing only the
+active tenant; rows from all other tenants are deleted and the file is vacuumed before it is
+returned. Never copy only a live `.db` file while WAL mode is active.
 
 To restore, disable or scale down the controller, replace the database on the Insights PVC with a verified snapshot using an administrative pod, preserve ownership for controller uid and gid 10001, and start the controller. Check `/ready`, the Insights page, and `devbox metrics status` before removing the previous snapshot.
 

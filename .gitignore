@@ -19,5 +19,8 @@ controller/**/*.pyc
 
 cli/target/
 
+workspace/**/__pycache__/
+workspace/**/*.pyc
+
 dist/
 *.tgz

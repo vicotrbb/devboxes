@@ -37,6 +37,56 @@ controller:
   tolerations: []
   affinity: {}
 
+# Multi-tenancy is opt-in so existing installations retain their single-operator
+# behavior. When enabled, each tenant is an authorization and Kubernetes namespace
+# boundary. Principal tokens are read from an existing Secret and are never stored
+# in Helm values.
+tenancy:
+  enabled: false
+  defaultTenant: default
+  existingPrincipalSecret: ""
+  principalTokenMountPath: /var/run/secrets/devboxes/principals
+  networkPolicy:
+    # Restrict tenant workspace ingress to SSH. Egress remains available for
+    # repositories, package registries, and the Insights controller.
+    enabled: true
+  # Example:
+  # tenants:
+  #   - id: platform
+  #     displayName: Platform Engineering
+  #     namespace: devboxes-platform
+  #     createNamespace: true
+  #     namespaceLabels:
+  #       owner: platform
+  #     workspaceSecretName: devboxes-workspace
+  #     workspaceServiceAccountName: devboxes-workspace
+  #     storageClass: fast-rwo
+  #     maxTtlHours: 72
+  #     allowedPresets: [small, medium]
+  #     allowedGpuProfiles: [nvidia-l4]
+  #     defaultGpuProfile: nvidia-l4
+  #     allowedImageProfiles: []
+  #     resourceQuota:
+  #       enabled: true
+  #       hard:
+  #         requests.cpu: "8"
+  #         requests.memory: 32Gi
+  #         requests.storage: 500Gi
+  #         count/deployments.apps: "10"
+  #         count/pods: "10"
+  tenants: []
+  # Example principal. Create existingPrincipalSecret in the controller namespace
+  # with a key matching tokenKey and at least 32 random characters.
+  # principals:
+  #   - subject: alice
+  #     displayName: Alice
+  #     tokenKey: alice-token
+  #     defaultTenant: platform
+  #     memberships:
+  #       - tenant: platform
+  #         role: admin
+  principals: []
+
 workspace:
   image:
     repository: ghcr.io/vicotrbb/devboxes-workspace

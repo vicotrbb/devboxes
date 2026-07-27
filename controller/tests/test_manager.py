@@ -11,6 +11,7 @@ from devboxes_controller.manager import (
     DevboxConflictError,
     DevboxManager,
     DevboxNotFoundError,
+    TenantQuotaExceededError,
     _custom_image_allocation,
     _gpu_allocation,
     _resolved_custom_image,
@@ -22,6 +23,7 @@ from devboxes_controller.manager import (
 from devboxes_controller.models import CreateDevboxRequest, DevboxState, GpuRequest, Preset
 from devboxes_controller.resources import (
     ANNOTATION_CREATED_AT,
+    ANNOTATION_CREATED_BY,
     ANNOTATION_CUSTOM_IMAGE_CONFIG,
     ANNOTATION_CUSTOM_IMAGE_PROFILE,
     ANNOTATION_EXPIRES_AT,
@@ -32,10 +34,23 @@ from devboxes_controller.resources import (
     ANNOTATION_PRESET,
     ANNOTATION_STORAGE,
     ANNOTATION_TTL_HOURS,
+    LABEL_MANAGED_BY,
     LABEL_NAME,
+    LABEL_TENANT,
+    MANAGED_BY,
 )
 
 from .fakes import sample_devbox
+
+
+def _managed_labels(name: str = "atlas", tenant: str | None = None) -> dict[str, str]:
+    labels = {
+        LABEL_MANAGED_BY: MANAGED_BY,
+        LABEL_NAME: name,
+    }
+    if tenant is not None:
+        labels[LABEL_TENANT] = tenant
+    return labels
 
 
 def test_ttl_hours_rejects_missing_invalid_and_out_of_range_values() -> None:
@@ -97,9 +112,50 @@ def test_create_removes_deployment_when_service_creation_fails() -> None:
     core.create_namespaced_persistent_volume_claim.assert_called_once()
 
 
+def test_create_rejects_an_unmanaged_same_name_deployment_without_deleting_it() -> None:
+    apps = Mock()
+    apps.read_namespaced_deployment.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(labels={"app": "someone-else"})
+    )
+    core = Mock()
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=core,
+    )
+
+    with pytest.raises(DevboxConflictError, match="already exists"):
+        asyncio.run(manager.create(CreateDevboxRequest(name="atlas")))
+
+    apps.create_namespaced_deployment.assert_not_called()
+    apps.delete_namespaced_deployment.assert_not_called()
+    core.read_namespaced_persistent_volume_claim.assert_not_called()
+
+
+def test_create_does_not_delete_a_deployment_that_wins_the_create_race() -> None:
+    apps = Mock()
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    apps.create_namespaced_deployment.side_effect = ApiException(status=409)
+    core = Mock()
+    core.read_namespaced_persistent_volume_claim.side_effect = ApiException(status=404)
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=core,
+    )
+
+    with pytest.raises(DevboxConflictError, match="already exists"):
+        asyncio.run(manager.create(CreateDevboxRequest(name="atlas")))
+
+    apps.delete_namespaced_deployment.assert_not_called()
+
+
 @pytest.mark.parametrize("purge", [False, True])
 def test_delete_preserves_or_purges_storage_explicitly(purge: bool) -> None:
     apps = Mock()
+    apps.read_namespaced_deployment.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(labels=_managed_labels())
+    )
     core = Mock()
     manager = DevboxManager(
         Settings(access_token="test-access-token-at-least-32-characters"),
@@ -142,6 +198,14 @@ def test_stop_expired_stops_only_active_expired_boxes() -> None:
         Settings(access_token="test-access-token-at-least-32-characters"),
         apps_api=apps,
         core_api=Mock(),
+    )
+    apps.read_namespaced_deployment.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(
+            annotations={ANNOTATION_EXPIRES_AT: expired.expires_at.isoformat()},
+            creation_timestamp=expired.created_at,
+            labels=_managed_labels("expired"),
+        ),
+        spec=SimpleNamespace(replicas=1),
     )
     manager.list = AsyncMock(return_value=[expired, stopped, active])  # type: ignore[method-assign]
 
@@ -207,7 +271,10 @@ def test_state_surfaces_scheduler_capacity_failures() -> None:
 def test_start_renews_the_original_ttl_atomically() -> None:
     apps = Mock()
     apps.read_namespaced_deployment.return_value = SimpleNamespace(
-        metadata=SimpleNamespace(annotations={ANNOTATION_TTL_HOURS: "72"})
+        metadata=SimpleNamespace(
+            annotations={ANNOTATION_TTL_HOURS: "72"},
+            labels=_managed_labels(),
+        )
     )
     settings = Settings(
         access_token="test-access-token-at-least-32-characters",
@@ -232,6 +299,9 @@ def test_start_renews_the_original_ttl_atomically() -> None:
 
 def test_stop_uses_the_scale_subresource_without_renewing_ttl() -> None:
     apps = Mock()
+    apps.read_namespaced_deployment.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(labels=_managed_labels())
+    )
     settings = Settings(access_token="test-access-token-at-least-32-characters")
     manager = DevboxManager(settings, apps_api=apps, core_api=Mock())
     manager.get = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
@@ -246,12 +316,31 @@ def test_stop_uses_the_scale_subresource_without_renewing_ttl() -> None:
     apps.patch_namespaced_deployment.assert_not_called()
 
 
+def test_stop_rejects_an_unmanaged_same_name_deployment() -> None:
+    apps = Mock()
+    apps.read_namespaced_deployment.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(labels={"app": "someone-else"})
+    )
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=Mock(),
+    )
+
+    with pytest.raises(DevboxNotFoundError):
+        asyncio.run(manager.scale("atlas", 0))
+
+    apps.patch_namespaced_deployment_scale.assert_not_called()
+
+
 def test_create_expands_a_retained_home_volume_for_a_larger_preset() -> None:
     apps = Mock()
     apps.read_namespaced_deployment.side_effect = ApiException(status=404)
     core = Mock()
+    core.read_namespaced_secret.side_effect = ApiException(status=404)
     core.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
-        spec=SimpleNamespace(resources=SimpleNamespace(requests={"storage": "20Gi"}))
+        metadata=SimpleNamespace(labels=_managed_labels()),
+        spec=SimpleNamespace(resources=SimpleNamespace(requests={"storage": "20Gi"})),
     )
     settings = Settings(access_token="test-access-token-at-least-32-characters")
     manager = DevboxManager(settings, apps_api=apps, core_api=core)
@@ -271,6 +360,26 @@ def test_create_expands_a_retained_home_volume_for_a_larger_preset() -> None:
     deployment = apps.create_namespaced_deployment.call_args.args[1]
     assert deployment["metadata"]["annotations"][ANNOTATION_STORAGE] == "50Gi"
     assert result is expected
+
+
+def test_create_rejects_an_unmanaged_retained_volume_before_mutating_it() -> None:
+    apps = Mock()
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    core = Mock()
+    core.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(labels={"app": "someone-else"})
+    )
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=core,
+    )
+
+    with pytest.raises(DevboxConflictError, match="not owned"):
+        asyncio.run(manager.create(CreateDevboxRequest(name="atlas")))
+
+    core.patch_namespaced_persistent_volume_claim.assert_not_called()
+    apps.create_namespaced_deployment.assert_not_called()
 
 
 def test_node_port_endpoint_uses_configured_node_address() -> None:
@@ -321,6 +430,9 @@ def test_create_uses_portable_node_port_and_default_storage_configuration() -> N
     deployment = apps.create_namespaced_deployment.call_args.args[1]
     service = core.create_namespaced_service.call_args.args[1]
     assert "storageClassName" not in pvc["spec"]
+    assert LABEL_TENANT not in pvc["metadata"]["labels"]
+    assert LABEL_TENANT not in deployment["metadata"]["labels"]
+    assert LABEL_TENANT not in service["metadata"]["labels"]
     assert deployment["spec"]["template"]["spec"]["serviceAccountName"] == "devboxes-workspace"
     assert "priorityClassName" not in deployment["spec"]["template"]["spec"]
     assert service["spec"]["type"] == "NodePort"
@@ -471,7 +583,7 @@ def _legacy_deployment(replicas: int) -> SimpleNamespace:
     return SimpleNamespace(
         metadata=SimpleNamespace(
             name="devbox-atlas",
-            labels={LABEL_NAME: "atlas"},
+            labels=_managed_labels(),
             annotations={
                 ANNOTATION_CREATED_AT: now.isoformat(),
                 ANNOTATION_EXPIRES_AT: (now + timedelta(hours=24)).isoformat(),
@@ -580,8 +692,9 @@ def test_active_legacy_workspace_is_marked_restart_required_without_template_pat
     apps.list_namespaced_deployment.return_value = SimpleNamespace(items=[deployment])
     apps.read_namespaced_deployment.return_value = deployment
     core = Mock()
+    core.read_namespaced_secret.side_effect = ApiException(status=404)
     core.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
-        metadata=SimpleNamespace(annotations={})
+        metadata=SimpleNamespace(annotations={}, labels=_managed_labels())
     )
     manager = DevboxManager(
         Settings(
@@ -663,9 +776,11 @@ def test_stopped_legacy_workspace_template_is_reconciled_without_starting_it() -
     apps.list_namespaced_deployment.return_value = SimpleNamespace(items=[deployment])
     apps.read_namespaced_deployment.side_effect = [deployment, _legacy_deployment(0)]
     core = Mock()
+    core.read_namespaced_secret.side_effect = ApiException(status=404)
     core.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
         metadata=SimpleNamespace(
-            annotations={ANNOTATION_INSTANCE_ID: "99999999-9999-4999-8999-999999999999"}
+            annotations={ANNOTATION_INSTANCE_ID: "99999999-9999-4999-8999-999999999999"},
+            labels=_managed_labels(),
         )
     )
     manager = DevboxManager(
@@ -710,9 +825,11 @@ def test_insights_reconciliation_uses_the_pinned_gpu_snapshot() -> None:
     apps.list_namespaced_deployment.return_value = SimpleNamespace(items=[deployment])
     apps.read_namespaced_deployment.side_effect = [deployment, _legacy_deployment(0)]
     core = Mock()
+    core.read_namespaced_secret.side_effect = ApiException(status=404)
     core.read_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
         metadata=SimpleNamespace(
-            annotations={ANNOTATION_INSTANCE_ID: "99999999-9999-4999-8999-999999999999"}
+            annotations={ANNOTATION_INSTANCE_ID: "99999999-9999-4999-8999-999999999999"},
+            labels=_managed_labels(),
         )
     )
     manager = DevboxManager(
@@ -779,3 +896,105 @@ def test_node_port_model_includes_allocated_port_in_ssh_command() -> None:
     assert box.ssh_host == "dev-node.example.test"
     assert box.ssh_port == 30222
     assert box.ssh_command == "ssh -t -p 30222 dev@dev-node.example.test"
+
+
+def test_multi_tenant_create_uses_only_the_resolved_namespace_and_policy() -> None:
+    settings = Settings(
+        access_token="test-access-token-at-least-32-characters",
+        multi_tenancy_enabled=True,
+        default_tenant="platform",
+        tenants=[
+            {
+                "id": "platform",
+                "displayName": "Platform",
+                "namespace": "devboxes-platform",
+            },
+            {
+                "id": "research",
+                "displayName": "Research",
+                "namespace": "devboxes-research",
+                "workspaceSecretName": "research-workspace",
+                "workspaceServiceAccountName": "research-workspace",
+                "storageClass": "fast-rwo",
+                "maxTtlHours": 24,
+                "allowedPresets": ["small"],
+            },
+        ],
+    )
+    research = settings.resolve_tenant("research")
+    apps = Mock()
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    core = Mock()
+    core.read_namespaced_persistent_volume_claim.side_effect = ApiException(status=404)
+    manager = DevboxManager(settings, apps_api=apps, core_api=core)
+    manager.get = AsyncMock(return_value=sample_devbox(tenant="research"))  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        manager.create(
+            CreateDevboxRequest(name="atlas", preset="small", ttl_hours=24),
+            research,
+            "alice@example.com",
+        )
+    )
+
+    assert result.tenant == "research"
+    pvc = core.create_namespaced_persistent_volume_claim.call_args.args[1]
+    deployment = apps.create_namespaced_deployment.call_args.args[1]
+    service = core.create_namespaced_service.call_args.args[1]
+    for manifest in (pvc, deployment, service):
+        assert manifest["metadata"]["namespace"] == "devboxes-research"
+        assert manifest["metadata"]["labels"][LABEL_TENANT] == "research"
+        assert manifest["metadata"]["annotations"][ANNOTATION_CREATED_BY] == "alice@example.com"
+    assert pvc["spec"]["storageClassName"] == "fast-rwo"
+    pod_spec = deployment["spec"]["template"]["spec"]
+    assert pod_spec["serviceAccountName"] == "research-workspace"
+    secret = next(volume for volume in pod_spec["volumes"] if volume["name"] == "workspace-secrets")
+    assert secret["secret"]["secretName"] == "research-workspace"
+    assert all(
+        operation.call_args.args[0] == "devboxes-research"
+        for operation in (
+            core.create_namespaced_persistent_volume_claim,
+            apps.create_namespaced_deployment,
+            core.create_namespaced_service,
+        )
+    )
+
+    with pytest.raises(ValueError, match="unavailable"):
+        asyncio.run(
+            manager.create(
+                CreateDevboxRequest(name="large", preset="large"),
+                research,
+            )
+        )
+
+
+def test_resource_quota_admission_is_translated_without_leaking_provider_details() -> None:
+    settings = Settings(
+        access_token="test-access-token-at-least-32-characters",
+        multi_tenancy_enabled=True,
+        default_tenant="platform",
+        tenants=[
+            {
+                "id": "platform",
+                "displayName": "Platform",
+                "namespace": "devboxes-platform",
+            }
+        ],
+    )
+    tenant = settings.resolve_tenant("platform")
+    apps = Mock()
+    apps.read_namespaced_deployment.side_effect = ApiException(status=404)
+    core = Mock()
+    core.read_namespaced_persistent_volume_claim.side_effect = ApiException(status=404)
+    core.create_namespaced_persistent_volume_claim.side_effect = ApiException(
+        status=403,
+        reason='exceeded quota: private-provider-detail="node-12"',
+    )
+    manager = DevboxManager(settings, apps_api=apps, core_api=core)
+
+    with pytest.raises(
+        TenantQuotaExceededError,
+        match="tenant 'platform' exceeded its Kubernetes ResourceQuota",
+    ) as error:
+        asyncio.run(manager.create(CreateDevboxRequest(name="atlas"), tenant))
+    assert "node-12" not in str(error.value)

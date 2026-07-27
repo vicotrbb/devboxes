@@ -4,6 +4,28 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- Added opt-in namespace-per-tenant isolation across Helm, the controller API, CLI,
+  dashboard, authenticated documentation, and public documentation, with principal
+  memberships, `viewer`/`member`/`admin` roles, tenant switching, creator attribution, and
+  backward-compatible single-operator defaults.
+- Added per-tenant workspace Secrets, tokenless ServiceAccounts, namespaced controller RBAC,
+  retained namespace creation, ResourceQuota, SSH-only workspace ingress NetworkPolicy,
+  StorageClass and TTL policy, and preset, GPU, and custom-image allowlists.
+- Added tenant-scoped Insights ingest credentials, storage, queries, exports, migrations, and
+  purge, including sanitized online SQLite backups and legacy-history assignment to the
+  configured default tenant.
+- Added Helm tenancy contract tests plus controller, API, authorization, manager, Insights,
+  and CLI coverage for isolation, role enforcement, quota failures, migration, and
+  configuration precedence.
+
+### Security
+
+- Keep principal token values out of Helm values by loading unique strong credentials from a
+  read-only existing Secret, bind sessions and CLI tokens to credential epochs, and resolve
+  live tenant membership before every request.
+
 ## [0.5.1] - 2026-07-27
 
 ### Changed

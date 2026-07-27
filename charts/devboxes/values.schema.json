@@ -36,6 +36,73 @@
         "affinity": {"type": "object"}
       }
     },
+    "tenancy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "defaultTenant",
+        "existingPrincipalSecret",
+        "principalTokenMountPath",
+        "networkPolicy",
+        "tenants",
+        "principals"
+      ],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "defaultTenant": {"$ref": "#/definitions/tenantId"},
+        "existingPrincipalSecret": {"type": "string", "maxLength": 253},
+        "principalTokenMountPath": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 256,
+          "pattern": "^/.*[^/]$",
+          "not": {"pattern": "(^|/)\\.\\.(/|$)"}
+        },
+        "networkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": {"type": "boolean"}
+          }
+        },
+        "tenants": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "#/definitions/tenant"}
+        },
+        "principals": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {"$ref": "#/definitions/principal"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"enabled": {"const": true}}},
+          "then": {
+            "properties": {
+              "tenants": {"minItems": 1}
+            }
+          },
+          "else": {
+            "properties": {
+              "tenants": {"maxItems": 0},
+              "principals": {"maxItems": 0}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"principals": {"minItems": 1}}},
+          "then": {
+            "properties": {
+              "existingPrincipalSecret": {"minLength": 1}
+            }
+          }
+        }
+      ]
+    },
     "workspace": {
       "type": "object",
       "additionalProperties": false,
@@ -274,6 +341,148 @@
     }
   },
   "definitions": {
+    "tenantId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"
+    },
+    "tenant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "displayName", "namespace"],
+      "properties": {
+        "id": {"$ref": "#/definitions/tenantId"},
+        "displayName": {"type": "string", "minLength": 1, "maxLength": 80},
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$",
+          "not": {"pattern": "^(?:default$|kube-)"}
+        },
+        "createNamespace": {"type": "boolean"},
+        "namespaceLabels": {
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": {
+            "maxLength": 317,
+            "pattern": "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*/)?[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$",
+            "not": {
+              "enum": [
+                "app.kubernetes.io/part-of",
+                "devboxes.bonalab.org/tenant",
+                "kubernetes.io/metadata.name"
+              ]
+            }
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 63,
+            "pattern": "^(?:[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?)?$"
+          }
+        },
+        "workspaceSecretName": {
+          "type": "string",
+          "maxLength": 253,
+          "pattern": "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*)?$"
+        },
+        "workspaceServiceAccountName": {
+          "type": "string",
+          "maxLength": 253,
+          "pattern": "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*)?$"
+        },
+        "storageClass": {
+          "type": "string",
+          "maxLength": 253,
+          "pattern": "^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*)?$"
+        },
+        "maxTtlHours": {"type": "integer", "minimum": 1, "maximum": 168},
+        "allowedPresets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {"type": "string", "enum": ["small", "medium", "large"]}
+        },
+        "allowedGpuProfiles": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/tenantId"}
+        },
+        "defaultGpuProfile": {"$ref": "#/definitions/tenantId"},
+        "allowedImageProfiles": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {"$ref": "#/definitions/tenantId"}
+        },
+        "resourceQuota": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "hard"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "hard": {
+              "type": "object",
+              "maxProperties": 32,
+              "propertyNames": {
+                "pattern": "^(?:requests\\.(?:cpu|memory|storage)|limits\\.(?:cpu|memory)|count/(?:pods|services|persistentvolumeclaims|secrets|deployments\\.apps|services\\.loadbalancers)|requests\\.[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?/[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?)$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"enabled": {"const": true}}},
+              "then": {"properties": {"hard": {"minProperties": 1}}}
+            }
+          ]
+        }
+      }
+    },
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "displayName", "tokenKey", "memberships"],
+      "properties": {
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9](?:[-_.@A-Za-z0-9]{0,126}[A-Za-z0-9])?$"
+        },
+        "displayName": {"type": "string", "minLength": 1, "maxLength": 80},
+        "tokenKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,251}[A-Za-z0-9])?$"
+        },
+        "defaultTenant": {"$ref": "#/definitions/tenantId"},
+        "memberships": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tenant", "role"],
+            "properties": {
+              "tenant": {"$ref": "#/definitions/tenantId"},
+              "role": {
+                "type": "string",
+                "enum": ["viewer", "member", "admin"]
+              }
+            }
+          }
+        }
+      }
+    },
     "image": {
       "type": "object",
       "additionalProperties": false,

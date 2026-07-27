@@ -173,7 +173,11 @@ Do not work around a Pending box by removing the GPU limit, using privileged mod
 
 ## Security model
 
-A GPU device expands what trusted workspace code can exercise on its assigned node. The workspace user has passwordless sudo and can use every device granted to the container, so GPU profiles belong only in the existing trusted single-operator deployment model.
+A GPU device expands what trusted workspace code can exercise on its assigned node. The
+workspace user has passwordless sudo and can use every device granted to the container, so
+GPU profiles are appropriate only for trusted operators and tenant members. A tenant can
+select only profiles in the intersection of the installation catalog and its
+`allowedGpuProfiles`; an empty tenant allowlist exposes no GPU profile.
 
 The GPU feature does not add privileged mode, host PID or network access, hostPath mounts, Kubernetes API credentials, or extra Linux capabilities. Clients cannot choose an image, resource name, RuntimeClass, supplemental group, selector, toleration, or device count. Only an operator changing Helm values can modify those fields.
 

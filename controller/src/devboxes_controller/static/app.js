@@ -2,6 +2,9 @@ const state = {
   boxes: [],
   deleteName: null,
   deleteTrigger: null,
+  tenant: document.body.dataset.tenant || "default",
+  canManage: document.body.dataset.canManage === "true",
+  canPurge: document.body.dataset.canPurge === "true",
 };
 
 const elements = {
@@ -37,6 +40,7 @@ async function api(path, options = {}) {
   const method = options.method || "GET";
   const headers = new Headers(options.headers || {});
   headers.set("Accept", "application/json");
+  headers.set("X-Devboxes-Tenant", state.tenant);
   if (options.body) {
     headers.set("Content-Type", "application/json");
   }
@@ -173,12 +177,14 @@ function renderBox(box) {
   if (box.ssh_command && box.state !== "stopped") {
     actions.append(actionButton("Copy SSH", "copy", box));
   }
-  if (box.state === "stopped") {
-    actions.append(actionButton("Start", "start", box));
-  } else {
-    actions.append(actionButton("Stop", "stop", box));
+  if (state.canManage) {
+    if (box.state === "stopped") {
+      actions.append(actionButton("Start", "start", box));
+    } else {
+      actions.append(actionButton("Stop", "stop", box));
+    }
+    actions.append(actionButton("Delete", "delete", box, true));
   }
-  actions.append(actionButton("Delete", "delete", box, true));
   actionsCell.append(actions);
 
   row.append(nameCell, stateCell, workspaceCell, expiryCell, actionsCell);
@@ -275,6 +281,9 @@ function toast(message, error = false) {
 
 elements.createForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!state.canManage) {
+    return;
+  }
   elements.createError.hidden = true;
   const submit = elements.createForm.querySelector("button[type='submit']");
   const form = new FormData(elements.createForm);
@@ -364,6 +373,10 @@ elements.confirmDelete.addEventListener("click", async (event) => {
   }
   const name = state.deleteName;
   const purge = elements.purgeVolume.checked;
+  if (purge && !state.canPurge) {
+    toast("Admin access is required to purge persistent data.", true);
+    return;
+  }
   elements.confirmDelete.disabled = true;
   try {
     const result = await api(
@@ -411,5 +424,10 @@ document.addEventListener("click", (event) => {
 });
 
 updateImageHelp();
+if (!state.canManage) {
+  for (const control of elements.createForm.elements) {
+    control.disabled = true;
+  }
+}
 loadBoxes();
 window.setInterval(() => loadBoxes({ quiet: true }), 8_000);

@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 cluster="${DEVBOXES_E2E_CLUSTER:-devboxes-e2e}"
 namespace="${DEVBOXES_NAMESPACE:-devboxes}"
+tenant_namespace="${DEVBOXES_E2E_TENANT_NAMESPACE:-${namespace}-research}"
 controller_port="${DEVBOXES_E2E_CONTROLLER_PORT:-18000}"
 ssh_port="${DEVBOXES_E2E_SSH_PORT:-12222}"
 custom_image_ssh_port="${DEVBOXES_E2E_CUSTOM_IMAGE_SSH_PORT:-12223}"
@@ -13,6 +14,7 @@ released_cli="${DEVBOXES_E2E_CLI:-}"
 interactive_ssh="${DEVBOXES_E2E_INTERACTIVE_SSH:-1}"
 workspace_timeout="${DEVBOXES_E2E_WORKSPACE_TIMEOUT:-3m}"
 token="e2e-access-token-at-least-32-characters"
+project_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 temporary_directory="$(mktemp -d)"
 controller_port_forward=""
 ssh_port_forward=""
@@ -43,13 +45,23 @@ if [[ "$interactive_ssh" != 0 && "$interactive_ssh" != 1 ]]; then
 fi
 previous_context="$(kubectl config current-context 2>/dev/null || true)"
 
+report_failure() {
+  status="$?"
+  printf 'E2E command failed at line %s (exit %s): %s\n' \
+    "${BASH_LINENO[0]}" "$status" "$BASH_COMMAND" >&2
+  return "$status"
+}
+trap report_failure ERR
+
 cleanup() {
   status="$1"
-  trap - EXIT INT TERM
+  trap - ERR EXIT INT TERM
   if [[ "$status" -ne 0 ]]; then
     printf '\nE2E diagnostics:\n' >&2
     kubectl --context "kind-$cluster" get all,pvc -n "$namespace" -o wide >&2 || true
     kubectl --context "kind-$cluster" describe pods -n "$namespace" >&2 || true
+    kubectl --context "kind-$cluster" get all,pvc -n "$tenant_namespace" -o wide >&2 || true
+    kubectl --context "kind-$cluster" describe pods -n "$tenant_namespace" >&2 || true
     kubectl --context "kind-$cluster" logs -n "$namespace" deployment/devboxes --tail=200 >&2 || true
     kubectl --context "kind-$cluster" logs -n "$namespace" deployment/devbox-smoke \
       -c insights-agent --tail=200 >&2 || true
@@ -986,9 +998,287 @@ else
 fi
 kubectl -n "$namespace" wait --for=delete pvc/devbox-smoke-home --timeout=2m
 
+if [[ -z "$published_version" ]]; then
+  alice_token="alice-viewer-token-at-least-32-characters"
+  bob_token="bob-admin-token-at-least-32-characters"
+
+  api \
+    -H 'Content-Type: application/json' \
+    -d '{"name":"legacy-adopt","preset":"small","ttl_hours":4}' \
+    "http://127.0.0.1:$controller_port/api/v1/devboxes" >/dev/null
+  legacy_tenant_label="$(
+    kubectl -n "$namespace" get deployment devbox-legacy-adopt -o json \
+      | jq -r '.metadata.labels["devboxes.bonalab.org/tenant"] // ""'
+  )"
+  test -z "$legacy_tenant_label"
+
+  kubectl create namespace "$tenant_namespace" >/dev/null
+  kubectl -n "$tenant_namespace" create secret generic research-workspace \
+    --from-file=SSH_AUTHORIZED_KEYS="$temporary_directory/id_ed25519.pub" >/dev/null
+  kubectl -n "$namespace" create secret generic devboxes-principals \
+    --from-literal=alice-token="$alice_token" \
+    --from-literal=bob-token="$bob_token" >/dev/null
+
+  helm upgrade devboxes "$project_directory/charts/devboxes" \
+    --namespace "$namespace" \
+    --reuse-values \
+    --set tenancy.enabled=true \
+    --set-string tenancy.defaultTenant=platform \
+    --set-string tenancy.existingPrincipalSecret=devboxes-principals \
+    --set-string tenancy.tenants[0].id=platform \
+    --set-string 'tenancy.tenants[0].displayName=Platform' \
+    --set-string "tenancy.tenants[0].namespace=$namespace" \
+    --set-string tenancy.tenants[0].workspaceSecretName=devboxes-workspace \
+    --set-string tenancy.tenants[1].id=research \
+    --set-string 'tenancy.tenants[1].displayName=Research' \
+    --set-string "tenancy.tenants[1].namespace=$tenant_namespace" \
+    --set-string tenancy.tenants[1].workspaceSecretName=research-workspace \
+    --set-string tenancy.principals[0].subject=alice \
+    --set-string 'tenancy.principals[0].displayName=Alice' \
+    --set-string tenancy.principals[0].tokenKey=alice-token \
+    --set-string tenancy.principals[0].defaultTenant=platform \
+    --set-string tenancy.principals[0].memberships[0].tenant=platform \
+    --set-string tenancy.principals[0].memberships[0].role=viewer \
+    --set-string tenancy.principals[1].subject=bob \
+    --set-string 'tenancy.principals[1].displayName=Bob' \
+    --set-string tenancy.principals[1].tokenKey=bob-token \
+    --set-string tenancy.principals[1].defaultTenant=research \
+    --set-string tenancy.principals[1].memberships[0].tenant=research \
+    --set-string tenancy.principals[1].memberships[0].role=admin >/dev/null
+  kubectl -n "$namespace" rollout status deployment/devboxes --timeout=3m
+  start_controller_port_forward
+
+  controller_deployment="$(kubectl -n "$namespace" get deployment devboxes -o json)"
+  jq -e '
+    any(.spec.template.spec.volumes[];
+      .name == "principal-tokens"
+      and .secret.secretName == "devboxes-principals"
+      and .secret.defaultMode == 288)
+    and .spec.template.spec.securityContext.fsGroup == 10001
+  ' <<<"$controller_deployment" >/dev/null
+  kubectl auth can-i \
+    --as "system:serviceaccount:${namespace}:devboxes" \
+    get deployments.apps \
+    -n "$tenant_namespace" | grep -Fx yes >/dev/null
+  kubectl -n "$tenant_namespace" get networkpolicy devboxes-workspace-ingress -o json \
+    | jq -e '
+        .spec.podSelector.matchLabels["app.kubernetes.io/managed-by"]
+          == "devboxes-controller"
+        and .spec.ingress[0].ports == [{"port": 2222, "protocol": "TCP"}]
+      ' >/dev/null
+  test "$(
+    kubectl -n "$tenant_namespace" get serviceaccount devboxes-workspace \
+      -o jsonpath='{.automountServiceAccountToken}'
+  )" = false
+
+  operator_identity="$(
+    api \
+      -H 'X-Devboxes-Tenant: research' \
+      "http://127.0.0.1:$controller_port/api/v1/whoami"
+  )"
+  jq -e '
+    .tenant == "research"
+    and .role == "operator"
+    and ([.tenants[].id] | sort) == ["platform", "research"]
+  ' <<<"$operator_identity" >/dev/null
+  api \
+    -H 'X-Devboxes-Tenant: platform' \
+    "http://127.0.0.1:$controller_port/api/v1/devboxes/legacy-adopt" \
+    | jq -e '.tenant == "platform"' >/dev/null
+
+  tenant_api() {
+    local principal_token="$1"
+    local selected_tenant="$2"
+    shift 2
+    curl -fsS \
+      -H "Authorization: Bearer $principal_token" \
+      -H "X-Devboxes-Tenant: $selected_tenant" \
+      "$@"
+  }
+
+  alice_identity="$(
+    tenant_api "$alice_token" platform \
+      "http://127.0.0.1:$controller_port/api/v1/whoami"
+  )"
+  jq -e '
+    .subject == "alice"
+    and .tenant == "platform"
+    and .role == "viewer"
+    and [.tenants[].id] == ["platform"]
+  ' <<<"$alice_identity" >/dev/null
+  bob_identity="$(
+    tenant_api "$bob_token" research \
+      "http://127.0.0.1:$controller_port/api/v1/whoami"
+  )"
+  jq -e '
+    .subject == "bob"
+    and .tenant == "research"
+    and .role == "admin"
+    and [.tenants[].id] == ["research"]
+  ' <<<"$bob_identity" >/dev/null
+
+  unauthorized_status="$(
+    curl -sS \
+      -o "$temporary_directory/unauthorized-tenant.json" \
+      -w '%{http_code}' \
+      -H "Authorization: Bearer $alice_token" \
+      -H 'X-Devboxes-Tenant: research' \
+      "http://127.0.0.1:$controller_port/api/v1/whoami"
+  )"
+  unknown_status="$(
+    curl -sS \
+      -o "$temporary_directory/unknown-tenant.json" \
+      -w '%{http_code}' \
+      -H "Authorization: Bearer $alice_token" \
+      -H 'X-Devboxes-Tenant: missing' \
+      "http://127.0.0.1:$controller_port/api/v1/whoami"
+  )"
+  test "$unauthorized_status" = 403
+  test "$unknown_status" = 403
+  cmp -s \
+    "$temporary_directory/unauthorized-tenant.json" \
+    "$temporary_directory/unknown-tenant.json"
+
+  viewer_create_status="$(
+    curl -sS \
+      -o "$temporary_directory/viewer-create.json" \
+      -w '%{http_code}' \
+      -H "Authorization: Bearer $alice_token" \
+      -H 'X-Devboxes-Tenant: platform' \
+      -H 'Content-Type: application/json' \
+      -d '{"name":"viewer-denied"}' \
+      "http://127.0.0.1:$controller_port/api/v1/devboxes"
+  )"
+  test "$viewer_create_status" = 403
+
+  api \
+    -H 'X-Devboxes-Tenant: platform' \
+    -H 'Content-Type: application/json' \
+    -d '{"name":"tenant-twin","preset":"small","ttl_hours":4}' \
+    "http://127.0.0.1:$controller_port/api/v1/devboxes" >/dev/null
+  tenant_api "$bob_token" research \
+    -H 'Content-Type: application/json' \
+    -d '{"name":"tenant-twin","preset":"small","ttl_hours":4}' \
+    "http://127.0.0.1:$controller_port/api/v1/devboxes" >/dev/null
+  kubectl -n "$namespace" rollout status deployment/devbox-tenant-twin \
+    --timeout="$workspace_timeout"
+  kubectl -n "$tenant_namespace" rollout status deployment/devbox-tenant-twin \
+    --timeout="$workspace_timeout"
+  test "$(
+    kubectl -n "$namespace" get deployment devbox-tenant-twin -o json \
+      | jq -r '.metadata.labels["devboxes.bonalab.org/tenant"]'
+  )" = platform
+  research_deployment="$(kubectl -n "$tenant_namespace" get deployment devbox-tenant-twin -o json)"
+  jq -e '
+    .metadata.labels["devboxes.bonalab.org/tenant"] == "research"
+    and .metadata.annotations["devboxes.bonalab.org/created-by"] == "bob"
+    and (
+      .spec.template.spec.containers[0].env
+      | any(.name == "DEVBOX_TENANT" and .value == "research")
+    )
+  ' <<<"$research_deployment" >/dev/null
+
+  if [[ -n "$released_cli" ]]; then
+    DEVBOX_URL="http://127.0.0.1:$controller_port" \
+    DEVBOX_TOKEN="$bob_token" \
+    DEVBOX_CONFIG="$temporary_directory/tenant-cli-config.toml" \
+      "$released_cli" --tenant research --json tenant list \
+      | jq -e '
+          .current == "research"
+          and [.tenants[].id] == ["research"]
+          and [.tenants[].role] == ["admin"]
+        ' >/dev/null
+  fi
+
+  write_otlp_fixture "$temporary_directory/tenant-codex-otlp.json" codex 11 11
+  for _ in {1..30}; do
+    if kubectl -n "$tenant_namespace" exec -i deployment/devbox-tenant-twin -c devbox -- \
+      curl -fsS \
+        -H 'Content-Type: application/json' \
+        --data-binary @- \
+        http://127.0.0.1:4318/v1/metrics \
+      <"$temporary_directory/tenant-codex-otlp.json" >/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+  research_summary=""
+  for _ in {1..45}; do
+    research_summary="$(
+      tenant_api "$bob_token" research \
+        "http://127.0.0.1:$controller_port/api/v1/insights/summary?since=24h&box=tenant-twin"
+    )"
+    if jq -e '
+      .tenant == "research"
+      and .data.ai.totals.tokens == 11
+    ' <<<"$research_summary" >/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+  jq -e '.tenant == "research" and .data.ai.totals.tokens == 11' \
+    <<<"$research_summary" >/dev/null
+  platform_summary="$(
+    tenant_api "$alice_token" platform \
+      "http://127.0.0.1:$controller_port/api/v1/insights/summary?since=24h&box=tenant-twin"
+  )"
+  jq -e '.tenant == "platform" and .data.ai.totals.tokens == 0' \
+    <<<"$platform_summary" >/dev/null
+
+  tenant_api "$bob_token" research \
+    -o "$temporary_directory/research-insights.db" \
+    "http://127.0.0.1:$controller_port/api/v1/insights/export?format=sqlite"
+  python3 - "$temporary_directory/research-insights.db" <<'PY'
+import sqlite3
+import sys
+
+connection = sqlite3.connect(sys.argv[1])
+try:
+    assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    tenants = {
+        row[0]
+        for row in connection.execute(
+            "SELECT DISTINCT tenant_id FROM devbox_instances"
+        )
+    }
+    assert tenants == {"research"}, tenants
+finally:
+    connection.close()
+PY
+
+  viewer_purge_status="$(
+    curl -sS \
+      -o "$temporary_directory/viewer-purge.json" \
+      -w '%{http_code}' \
+      -X DELETE \
+      -H "Authorization: Bearer $alice_token" \
+      -H 'X-Devboxes-Tenant: platform' \
+      "http://127.0.0.1:$controller_port/api/v1/insights?box=tenant-twin"
+  )"
+  test "$viewer_purge_status" = 403
+  tenant_api "$bob_token" research \
+    -X DELETE \
+    "http://127.0.0.1:$controller_port/api/v1/insights?box=tenant-twin" >/dev/null
+  tenant_api "$bob_token" research \
+    -X DELETE \
+    "http://127.0.0.1:$controller_port/api/v1/devboxes/tenant-twin?purge=true" >/dev/null
+  api \
+    -X DELETE \
+    -H 'X-Devboxes-Tenant: platform' \
+    "http://127.0.0.1:$controller_port/api/v1/devboxes/tenant-twin?purge=true" >/dev/null
+  api \
+    -X DELETE \
+    -H 'X-Devboxes-Tenant: platform' \
+    "http://127.0.0.1:$controller_port/api/v1/devboxes/legacy-adopt?purge=true" >/dev/null
+  kubectl -n "$tenant_namespace" wait --for=delete deployment/devbox-tenant-twin \
+    --timeout=2m
+  kubectl -n "$tenant_namespace" wait --for=delete pvc/devbox-tenant-twin-home \
+    --timeout=2m
+fi
+
 if [[ -n "$published_version" ]]; then
   printf 'Verified published %s chart, images, and CLI through clean install, Insights ingest, Git aggregation, deduplication, durable outboxes, central restart, API, PVC, NodePort %s, SSH, retain, reuse, and explicit purge.\n' \
     "$published_version" "$node_port"
 else
-  printf 'Verified clean install, Insights ingest, Git aggregation, deduplication, durable outboxes, central restart, API, PVC, NodePort %s, SSH, retain, reuse, and explicit purge.\n' "$node_port"
+  printf 'Verified clean install, Insights ingest, Git aggregation, deduplication, durable outboxes, central restart, API, PVC, NodePort %s, SSH, retain, reuse, explicit purge, opt-in tenancy upgrade, role enforcement, same-name isolation, CLI selection, and tenant-sanitized SQLite export.\n' "$node_port"
 fi

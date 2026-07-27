@@ -1,3 +1,4 @@
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi.testclient import TestClient
@@ -15,7 +16,7 @@ def app_client(settings: Settings | None = None) -> TestClient:
         cookie_secure=False,
         cleanup_interval_seconds=3600,
     )
-    return TestClient(create_app(settings, FakeManager()))  # type: ignore[arg-type]
+    return TestClient(create_app(settings, FakeManager(settings)))  # type: ignore[arg-type]
 
 
 def authorization_parameters(port: int = 49152) -> tuple[dict[str, str], str]:
@@ -155,7 +156,17 @@ def test_cli_bearer_can_inspect_and_control_a_devbox() -> None:
     with app_client() as client:
         assert client.get("/api/v1/whoami", headers=headers).json() == {
             "user": "operator",
+            "subject": "operator",
             "mode": "master-bearer",
+            "tenant": "default",
+            "role": "operator",
+            "tenants": [
+                {
+                    "id": "default",
+                    "display_name": "operator",
+                    "role": "operator",
+                }
+            ],
         }
         assert client.get("/api/v1/devboxes/atlas", headers=headers).status_code == 200
 
@@ -245,6 +256,24 @@ def test_gpu_capabilities_expose_only_safe_profile_metadata() -> None:
             ],
         },
         "images": {"enabled": False, "profiles": []},
+        "tenancy": {
+            "enabled": False,
+            "current": {
+                "id": "default",
+                "display_name": "operator",
+                "role": "operator",
+            },
+            "tenants": [
+                {
+                    "id": "default",
+                    "display_name": "operator",
+                    "role": "operator",
+                }
+            ],
+            "max_ttl_hours": 168,
+            "allowed_presets": ["small", "medium", "large"],
+            "resource_quota": {},
+        },
     }
     assert "workspaceImage" not in response.text
     assert "runtimeClassName" not in response.text
@@ -394,7 +423,17 @@ def test_cli_approval_exchange_whoami_replay_and_no_store() -> None:
         cli_headers = {"Authorization": f"Bearer {payload['access_token']}"}
         assert client.get("/api/v1/whoami", headers=cli_headers).json() == {
             "user": "operator",
+            "subject": "operator",
             "mode": "cli-bearer",
+            "tenant": "default",
+            "role": "operator",
+            "tenants": [
+                {
+                    "id": "default",
+                    "display_name": "operator",
+                    "role": "operator",
+                }
+            ],
         }
         assert client.get("/api/v1/devboxes", headers=cli_headers).status_code == 200
 
@@ -492,3 +531,137 @@ def test_cli_exchange_rejects_malformed_payload_without_reflecting_secrets() -> 
         assert invalid_json.status_code == 400
         assert invalid_json.json() == {"detail": "Invalid authorization code exchange"}
         assert secret not in invalid_json.text
+
+
+def test_tenant_headers_roles_and_dashboard_context_are_enforced(
+    tmp_path: Path,
+) -> None:
+    credentials = {
+        "viewer-token": "viewer-principal-token-at-least-32-characters",
+        "member-token": "member-principal-token-at-least-32-characters",
+        "admin-token": "admin-principal-token-at-least-32-characters",
+    }
+    for key, value in credentials.items():
+        (tmp_path / key).write_text(value)
+    settings = Settings(
+        access_token="test-access-token-at-least-32-characters",
+        cookie_secure=False,
+        cleanup_interval_seconds=3600,
+        multi_tenancy_enabled=True,
+        default_tenant="platform",
+        principal_token_directory=str(tmp_path),
+        tenants=[
+            {
+                "id": "platform",
+                "displayName": "Platform",
+                "namespace": "devboxes-platform",
+                "allowedPresets": ["small", "medium"],
+                "maxTtlHours": 72,
+            },
+            {
+                "id": "research",
+                "displayName": "Research",
+                "namespace": "devboxes-research",
+            },
+        ],
+        principals=[
+            {
+                "subject": "viewer",
+                "displayName": "View Only",
+                "tokenKey": "viewer-token",
+                "memberships": [{"tenant": "platform", "role": "viewer"}],
+            },
+            {
+                "subject": "member",
+                "displayName": "Member",
+                "tokenKey": "member-token",
+                "memberships": [{"tenant": "platform", "role": "member"}],
+            },
+            {
+                "subject": "admin",
+                "displayName": "Admin",
+                "tokenKey": "admin-token",
+                "memberships": [
+                    {"tenant": "platform", "role": "admin"},
+                    {"tenant": "research", "role": "admin"},
+                ],
+            },
+        ],
+    )
+    manager = FakeManager(settings)
+    app = TestClient(create_app(settings, manager))  # type: ignore[arg-type]
+    viewer_headers = {"Authorization": f"Bearer {credentials['viewer-token']}"}
+    member_headers = {"Authorization": f"Bearer {credentials['member-token']}"}
+    admin_headers = {"Authorization": f"Bearer {credentials['admin-token']}"}
+    operator_headers = {
+        "Authorization": "Bearer test-access-token-at-least-32-characters",
+        "X-Devboxes-Tenant": "research",
+    }
+
+    with app:
+        whoami = app.get("/api/v1/whoami", headers=viewer_headers).json()
+        assert whoami["tenant"] == "platform"
+        assert whoami["role"] == "viewer"
+        assert len(app.get("/api/v1/devboxes", headers=viewer_headers).json()["items"]) == 3
+        assert (
+            app.post(
+                "/api/v1/devboxes",
+                headers=viewer_headers,
+                json={"name": "blocked"},
+            ).status_code
+            == 403
+        )
+        assert (
+            app.get(
+                "/api/v1/devboxes",
+                headers={**viewer_headers, "X-Devboxes-Tenant": "research"},
+            ).status_code
+            == 403
+        )
+
+        created = app.post(
+            "/api/v1/devboxes",
+            headers=member_headers,
+            json={"name": "member-box", "preset": "small", "ttl_hours": 72},
+        )
+        assert created.status_code == 201
+        assert created.json()["tenant"] == "platform"
+        assert created.json()["created_by"] == "member"
+        assert (
+            app.delete(
+                "/api/v1/devboxes/member-box?purge=true",
+                headers=member_headers,
+            ).status_code
+            == 403
+        )
+        assert app.delete("/api/v1/devboxes/member-box", headers=member_headers).status_code == 200
+
+        assert (
+            app.delete(
+                "/api/v1/devboxes/paperclip?purge=true",
+                headers=admin_headers,
+            ).status_code
+            == 200
+        )
+        same_name = app.post(
+            "/api/v1/devboxes",
+            headers=operator_headers,
+            json={"name": "atlas"},
+        )
+        assert same_name.status_code == 201
+        research_items = app.get(
+            "/api/v1/devboxes",
+            headers=operator_headers,
+        ).json()["items"]
+        assert [item["name"] for item in research_items] == ["atlas"]
+
+        login = app.post(
+            "/auth/login",
+            data={"token": credentials["viewer-token"]},
+            follow_redirects=False,
+        )
+        assert login.status_code == 303
+        dashboard = app.get("/?tenant=platform")
+        assert "Platform · viewer access" in dashboard.text
+        assert "Read-only tenant access" in dashboard.text
+        assert 'id="tenant-switcher"' in dashboard.text

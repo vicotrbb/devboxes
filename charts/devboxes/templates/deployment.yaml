@@ -118,6 +118,16 @@ spec:
               value: {{ .Values.controller.displayName | quote }}
             - name: DEVBOXES_CLUSTER_NAME
               value: {{ .Values.controller.clusterName | quote }}
+            - name: DEVBOXES_MULTI_TENANCY_ENABLED
+              value: {{ .Values.tenancy.enabled | quote }}
+            - name: DEVBOXES_DEFAULT_TENANT
+              value: {{ .Values.tenancy.defaultTenant | quote }}
+            - name: DEVBOXES_TENANTS
+              value: {{ .Values.tenancy.tenants | toJson | quote }}
+            - name: DEVBOXES_PRINCIPALS
+              value: {{ .Values.tenancy.principals | toJson | quote }}
+            - name: DEVBOXES_PRINCIPAL_TOKEN_DIRECTORY
+              value: {{ .Values.tenancy.principalTokenMountPath | quote }}
             - name: DEVBOXES_COOKIE_SECURE
               value: {{ .Values.controller.cookieSecure | quote }}
             - name: DEVBOXES_DEFAULT_TTL_HOURS
@@ -157,7 +167,7 @@ spec:
             - name: DEVBOXES_INSIGHTS_DATABASE_WARNING_BYTES
               value: {{ int .Values.insights.storage.warningBytes | quote }}
             - name: DEVBOXES_INSIGHTS_CONTROLLER_URL
-              value: {{ printf "http://%s:%v" (include "devboxes.fullname" .) .Values.service.port | quote }}
+              value: {{ printf "http://%s.%s.svc:%v" (include "devboxes.fullname" .) .Release.Namespace .Values.service.port | quote }}
             - name: DEVBOXES_INSIGHTS_RETENTION_RAW_DAYS
               value: {{ int .Values.insights.retention.rawDays | quote }}
             - name: DEVBOXES_INSIGHTS_RETENTION_HOURLY_DAYS
@@ -229,6 +239,11 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if gt (len .Values.tenancy.principals) 0 }}
+            - name: principal-tokens
+              mountPath: {{ .Values.tenancy.principalTokenMountPath }}
+              readOnly: true
+            {{- end }}
             {{- if .Values.insights.enabled }}
             - name: insights
               mountPath: /var/lib/devboxes
@@ -236,6 +251,12 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if gt (len .Values.tenancy.principals) 0 }}
+        - name: principal-tokens
+          secret:
+            secretName: {{ .Values.tenancy.existingPrincipalSecret }}
+            defaultMode: 0440
+        {{- end }}
         {{- if .Values.insights.enabled }}
         - name: insights
           persistentVolumeClaim:

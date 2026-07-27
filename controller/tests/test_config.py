@@ -314,3 +314,266 @@ def test_custom_image_profiles_load_from_the_helm_json_environment(
     assert profile.description == "Serve static content"
     assert profile.resources is not None
     assert profile.ports[0].container_port == 8080
+
+
+def test_multi_tenancy_policy_loads_from_helm_json_and_resolves_effective_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVBOXES_ACCESS_TOKEN", "test-access-token-at-least-32-characters")
+    monkeypatch.setenv("DEVBOXES_MULTI_TENANCY_ENABLED", "true")
+    monkeypatch.setenv("DEVBOXES_DEFAULT_TENANT", "platform")
+    monkeypatch.setenv(
+        "DEVBOXES_TENANTS",
+        json.dumps(
+            [
+                {
+                    "id": "platform",
+                    "displayName": " Platform Engineering ",
+                    "namespace": "devboxes-platform",
+                    "workspaceSecretName": "platform-workspace",
+                    "maxTtlHours": 72,
+                    "allowedPresets": ["small", "medium"],
+                    "allowedGpuProfiles": [],
+                    "resourceQuota": {
+                        "enabled": True,
+                        "hard": {
+                            "requests.cpu": "8",
+                            "requests.memory": "32Gi",
+                            "requests.nvidia.com/gpu": "2",
+                        },
+                    },
+                },
+                {
+                    "id": "research",
+                    "displayName": "Research",
+                    "namespace": "devboxes-research",
+                },
+            ]
+        ),
+    )
+    monkeypatch.setenv(
+        "DEVBOXES_PRINCIPALS",
+        json.dumps(
+            [
+                {
+                    "subject": "alice@example.com",
+                    "displayName": "Alice",
+                    "tokenKey": "alice-token",
+                    "defaultTenant": "platform",
+                    "memberships": [
+                        {"tenant": "platform", "role": "admin"},
+                        {"tenant": "research", "role": "viewer"},
+                    ],
+                }
+            ]
+        ),
+    )
+
+    settings = Settings(_env_file=None)
+    platform = settings.resolve_tenant("platform")
+
+    assert platform.display_name == "Platform Engineering"
+    assert settings.tenant_max_ttl_hours(platform) == 72
+    assert [preset.value for preset in platform.allowed_presets] == ["small", "medium"]
+    assert settings.tenant_workspace_secret_name(platform) == "platform-workspace"
+    assert platform.resource_quota is not None
+    assert platform.resource_quota.hard["requests.nvidia.com/gpu"] == "2"
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"default_tenant": "missing"}, "default_tenant"),
+        (
+            {
+                "tenants": [
+                    {
+                        "id": "platform",
+                        "displayName": "Platform",
+                        "namespace": "shared",
+                    },
+                    {
+                        "id": "research",
+                        "displayName": "Research",
+                        "namespace": "shared",
+                    },
+                ]
+            },
+            "namespaces must be unique",
+        ),
+        (
+            {
+                "principals": [
+                    {
+                        "subject": "alice",
+                        "displayName": "Alice",
+                        "tokenKey": "alice-token",
+                        "memberships": [{"tenant": "missing", "role": "member"}],
+                    }
+                ]
+            },
+            "unknown tenants",
+        ),
+    ],
+)
+def test_multi_tenancy_rejects_ambiguous_or_unreachable_policy(
+    override: dict[str, object],
+    message: str,
+) -> None:
+    values: dict[str, object] = {
+        "access_token": "test-access-token-at-least-32-characters",
+        "multi_tenancy_enabled": True,
+        "default_tenant": "platform",
+        "tenants": [
+            {
+                "id": "platform",
+                "displayName": "Platform",
+                "namespace": "devboxes-platform",
+            }
+        ],
+        "_env_file": None,
+    }
+    values.update(override)
+
+    with pytest.raises(ValidationError, match=message):
+        Settings(**values)  # type: ignore[arg-type]
+
+
+def test_tenant_gpu_default_is_explicit_and_must_remain_inside_the_allowlist() -> None:
+    profiles = [
+        GpuProfile(
+            name=name,
+            displayName=name.upper(),
+            resourceName=f"example.com/{name}",
+            count=1,
+        )
+        for name in ("shared", "dedicated")
+    ]
+    settings = Settings(
+        access_token="test-access-token-at-least-32-characters",
+        gpu_enabled=True,
+        gpu_default_profile="shared",
+        gpu_profiles=profiles,
+        multi_tenancy_enabled=True,
+        default_tenant="platform",
+        tenants=[
+            {
+                "id": "platform",
+                "displayName": "Platform",
+                "namespace": "devboxes-platform",
+                "allowedGpuProfiles": ["dedicated"],
+                "defaultGpuProfile": "dedicated",
+            }
+        ],
+        _env_file=None,
+    )
+    tenant = settings.resolve_tenant("platform")
+
+    assert settings.tenant_default_gpu_profile(tenant) == "dedicated"
+    assert settings.resolve_gpu_profile(None, tenant).name == "dedicated"
+
+    with pytest.raises(ValidationError, match="included in allowedGpuProfiles"):
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            gpu_enabled=True,
+            gpu_default_profile="shared",
+            gpu_profiles=profiles,
+            multi_tenancy_enabled=True,
+            default_tenant="platform",
+            tenants=[
+                {
+                    "id": "platform",
+                    "displayName": "Platform",
+                    "namespace": "devboxes-platform",
+                    "allowedGpuProfiles": ["dedicated"],
+                    "defaultGpuProfile": "shared",
+                }
+            ],
+            _env_file=None,
+        )
+
+    with pytest.raises(ValidationError, match="requires GPU acceleration"):
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            gpu_enabled=False,
+            gpu_profiles=profiles,
+            multi_tenancy_enabled=True,
+            default_tenant="platform",
+            tenants=[
+                {
+                    "id": "platform",
+                    "displayName": "Platform",
+                    "namespace": "devboxes-platform",
+                    "defaultGpuProfile": "shared",
+                }
+            ],
+            _env_file=None,
+        )
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ({"principal_token_directory": "/"}, "absolute non-root"),
+        ({"principal_token_directory": "//"}, "absolute non-root"),
+        ({"principal_token_directory": "/var/run/../secrets"}, "absolute non-root"),
+        (
+            {
+                "multi_tenancy_enabled": True,
+                "default_tenant": "platform",
+                "tenants": [
+                    {
+                        "id": "platform",
+                        "displayName": "Platform",
+                        "namespace": "default",
+                    }
+                ],
+            },
+            "non-system",
+        ),
+        (
+            {
+                "multi_tenancy_enabled": True,
+                "default_tenant": "platform",
+                "tenants": [
+                    {
+                        "id": "platform",
+                        "displayName": "Platform",
+                        "namespace": "devboxes-platform",
+                        "namespaceLabels": {
+                            "devboxes.bonalab.org/tenant": "other",
+                        },
+                    }
+                ],
+            },
+            "reserved label",
+        ),
+        (
+            {
+                "multi_tenancy_enabled": True,
+                "default_tenant": "platform",
+                "tenants": [
+                    {
+                        "id": "platform",
+                        "displayName": "Platform",
+                        "namespace": "devboxes-platform",
+                        "namespaceLabels": {
+                            "kubernetes.io/metadata.name": "other",
+                        },
+                    }
+                ],
+            },
+            "reserved label",
+        ),
+    ],
+)
+def test_tenancy_rejects_unsafe_mount_and_namespace_metadata(
+    values: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        Settings(
+            access_token="test-access-token-at-least-32-characters",
+            _env_file=None,
+            **values,
+        )

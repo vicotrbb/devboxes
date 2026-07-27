@@ -54,6 +54,15 @@ helm upgrade --install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
 
 Before the Helm command, create `devboxes-auth` and `devboxes-workspace` through your secret manager or the commands in [credentials](credentials.md). Do not place secret values in the Helm values file. Replace the example source range with the actual trusted client network. Insights remains optional; when enabled, use a low-latency RWO volume with reliable SQLite locking.
 
+For a shared installation, enable [multi-tenancy](multi-tenancy.md) and create one namespace
+and workspace Secret per isolation or quota boundary. Give users principal credentials
+instead of the master token, then verify the selected context:
+
+```bash
+devbox tenant list
+devbox tenant use platform
+```
+
 ## 3. Warm the workspace image when startup latency matters
 
 Workspace creation uses `imagePullPolicy: IfNotPresent`. The first devbox scheduled to a node can therefore wait for the workspace image, while later boxes on that node reuse the local image. On clusters you control, pre-pull the exact released workspace image on every eligible node, or use a registry mirror close to the cluster.
@@ -129,10 +138,13 @@ For a GPU box, also verify advertised device capacity, profile selectors, taints
 Use these checks for a slow or pending box:
 
 ```bash
-kubectl -n devboxes get pod,pvc,service -l devboxes.bonalab.org/name=atlas -o wide
-kubectl -n devboxes describe pod -l devboxes.bonalab.org/name=atlas
-kubectl -n devboxes get events --sort-by=.lastTimestamp
-kubectl top pod -n devboxes -l devboxes.bonalab.org/name=atlas
+tenant_namespace=devboxes
+kubectl -n "$tenant_namespace" get pod,pvc,service \
+  -l devboxes.bonalab.org/name=atlas -o wide
+kubectl -n "$tenant_namespace" describe pod \
+  -l devboxes.bonalab.org/name=atlas
+kubectl -n "$tenant_namespace" get events --sort-by=.lastTimestamp
+kubectl top pod -n "$tenant_namespace" -l devboxes.bonalab.org/name=atlas
 ```
 
 `kubectl top` requires Metrics Server. Storage and node-level metrics depend on the cluster platform.
@@ -142,7 +154,9 @@ kubectl top pod -n devboxes -l devboxes.bonalab.org/name=atlas
 - Keep active repositories and tool caches under `/home/dev`, which persists across stop, delete without `--purge`, and pod replacement.
 - Use `devbox stop` instead of deleting a box when you plan to resume with the same environment.
 - Avoid `--purge` unless the home volume is intentionally disposable.
-- Keep one controller replica unless you have tested the operational behavior of multiple writers. Kubernetes remains the source of truth, but the supported default is one trusted operator and one controller replica.
+- Keep one controller replica unless you have tested the operational behavior of multiple
+  writers. Kubernetes remains the source of truth; one controller can serve the default
+  single-operator namespace or every explicitly configured tenant namespace.
 - When Insights is enabled, keep exactly one controller replica, monitor collector freshness and queue loss, and use the online backup export for its database.
 - Track image, chart, and CLI versions together, then read the changelog before every upgrade.
 
