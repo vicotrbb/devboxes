@@ -22,6 +22,12 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
   and CLI coverage for isolation, role enforcement, quota failures, migration, and
   configuration precedence.
 
+### Fixed
+
+- Retry Kubernetes resourceVersion conflicts during workspace start and stop with bounded
+  backoff and fresh tenant ownership validation, while returning a stable conflict response
+  if concurrent updates persist.
+
 ### Security
 
 - Keep principal token values out of Helm values by loading unique strong credentials from a

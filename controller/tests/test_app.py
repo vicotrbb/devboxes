@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi.testclient import TestClient
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 from devboxes_controller.app import create_app
 from devboxes_controller.auth import pkce_s256
 from devboxes_controller.config import CustomImagePort, CustomImageProfile, GpuProfile, Settings
+from devboxes_controller.manager import DevboxConflictError
 
 from .fakes import FakeManager
 
@@ -198,6 +200,27 @@ def test_api_maps_conflicts_and_missing_names() -> None:
         missing = client.get("/api/v1/devboxes/missing", headers=headers)
         assert missing.status_code == 404
         assert "was not found" in missing.json()["detail"]
+
+
+def test_api_maps_exhausted_lifecycle_retries_to_conflicts() -> None:
+    settings = Settings(
+        access_token="test-access-token-at-least-32-characters",
+        cookie_secure=False,
+        cleanup_interval_seconds=3600,
+    )
+    manager = FakeManager(settings)
+    manager.scale = AsyncMock(  # type: ignore[method-assign]
+        side_effect=DevboxConflictError("devbox 'atlas' changed concurrently; retry the request")
+    )
+    headers = {"Authorization": "Bearer test-access-token-at-least-32-characters"}
+
+    with TestClient(create_app(settings, manager)) as client:  # type: ignore[arg-type]
+        for action in ("start", "stop"):
+            response = client.post(f"/api/v1/devboxes/atlas/{action}", headers=headers)
+            assert response.status_code == 409
+            assert response.json() == {
+                "detail": "devbox 'atlas' changed concurrently; retry the request"
+            }
 
 
 def test_api_requires_authentication() -> None:

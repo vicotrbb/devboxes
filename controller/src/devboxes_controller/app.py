@@ -597,13 +597,16 @@ def create_app(
         _require_manage(auth)
         try:
             return await _not_found(manager.scale(name, 1, auth.tenant), name)
-        except TenantQuotaExceededError as error:
+        except (DevboxConflictError, TenantQuotaExceededError) as error:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     @app.post("/api/v1/devboxes/{name}/stop", tags=["devboxes"])
     async def stop_devbox(name: DevboxName, auth: Auth) -> Devbox:
         _require_manage(auth)
-        return await _not_found(manager.scale(name, 0, auth.tenant), name)
+        try:
+            return await _not_found(manager.scale(name, 0, auth.tenant), name)
+        except DevboxConflictError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
     @app.delete("/api/v1/devboxes/{name}", tags=["devboxes"])
     async def delete_devbox(

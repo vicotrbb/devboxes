@@ -297,6 +297,110 @@ def test_start_renews_the_original_ttl_atomically() -> None:
     assert result is expected
 
 
+def test_start_retries_a_resource_version_conflict_with_fresh_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    apps = Mock()
+    first = SimpleNamespace(
+        metadata=SimpleNamespace(
+            annotations={ANNOTATION_TTL_HOURS: "24"},
+            labels=_managed_labels(),
+            resource_version="101",
+        )
+    )
+    second = SimpleNamespace(
+        metadata=SimpleNamespace(
+            annotations={ANNOTATION_TTL_HOURS: "24"},
+            labels=_managed_labels(),
+            resource_version="102",
+        )
+    )
+    apps.read_namespaced_deployment.side_effect = [first, second]
+    apps.patch_namespaced_deployment.side_effect = [ApiException(status=409), None]
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=Mock(),
+    )
+    expected = Mock()
+    manager.get = AsyncMock(return_value=expected)  # type: ignore[method-assign]
+    sleep = AsyncMock()
+    monkeypatch.setattr("devboxes_controller.manager.asyncio.sleep", sleep)
+
+    assert asyncio.run(manager.scale("atlas", 1)) is expected
+
+    assert apps.read_namespaced_deployment.call_count == 2
+    assert apps.patch_namespaced_deployment.call_count == 2
+    patches = [call.args[2] for call in apps.patch_namespaced_deployment.call_args_list]
+    assert [patch["metadata"]["resourceVersion"] for patch in patches] == ["101", "102"]
+    sleep.assert_awaited_once_with(0.05)
+
+
+def test_start_revalidates_ownership_after_a_resource_version_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    apps = Mock()
+    apps.read_namespaced_deployment.side_effect = [
+        SimpleNamespace(
+            metadata=SimpleNamespace(
+                annotations={},
+                labels=_managed_labels(),
+                resource_version="101",
+            )
+        ),
+        SimpleNamespace(
+            metadata=SimpleNamespace(
+                annotations={},
+                labels={"app": "replacement"},
+                resource_version="102",
+            )
+        ),
+    ]
+    apps.patch_namespaced_deployment.side_effect = ApiException(status=409)
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=Mock(),
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr("devboxes_controller.manager.asyncio.sleep", sleep)
+
+    with pytest.raises(DevboxNotFoundError):
+        asyncio.run(manager.scale("atlas", 1))
+
+    assert apps.read_namespaced_deployment.call_count == 2
+    apps.patch_namespaced_deployment.assert_called_once()
+    sleep.assert_awaited_once_with(0.05)
+
+
+def test_start_returns_a_stable_conflict_after_bounded_retry_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    apps = Mock()
+    apps.read_namespaced_deployment.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(
+            annotations={},
+            labels=_managed_labels(),
+            resource_version="101",
+        )
+    )
+    apps.patch_namespaced_deployment.side_effect = ApiException(status=409)
+    manager = DevboxManager(
+        Settings(access_token="test-access-token-at-least-32-characters"),
+        apps_api=apps,
+        core_api=Mock(),
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr("devboxes_controller.manager.asyncio.sleep", sleep)
+
+    with pytest.raises(DevboxConflictError, match="changed concurrently"):
+        asyncio.run(manager.scale("atlas", 1))
+
+    assert apps.read_namespaced_deployment.call_count == 5
+    assert apps.patch_namespaced_deployment.call_count == 5
+    assert sleep.await_count == 4
+
+
 def test_stop_uses_the_scale_subresource_without_renewing_ttl() -> None:
     apps = Mock()
     apps.read_namespaced_deployment.return_value = SimpleNamespace(
