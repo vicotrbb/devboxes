@@ -1,6 +1,6 @@
 {
   "name": "devboxes-repository-tooling",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "JavaScript and documentation quality gates for Devboxes",

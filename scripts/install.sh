@@ -3,7 +3,7 @@ set -eu
 
 release="${DEVBOXES_RELEASE:-devboxes}"
 namespace="${DEVBOXES_NAMESPACE:-devboxes}"
-version="${DEVBOXES_VERSION:-0.5.1}"
+version="${DEVBOXES_VERSION:-0.6.0}"
 repository="${DEVBOXES_CHART_REPOSITORY:-oci://ghcr.io/vicotrbb/charts/devboxes}"
 chart_source="${DEVBOXES_CHART_SOURCE:-auto}"
 controller_secret="${DEVBOXES_CONTROLLER_SECRET:-devboxes-auth}"

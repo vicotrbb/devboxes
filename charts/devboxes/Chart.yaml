@@ -2,8 +2,8 @@ apiVersion: v2
 name: devboxes
 description: Self-hosted, ephemeral development environments on Kubernetes
 type: application
-version: 0.5.1
-appVersion: "0.5.1"
+version: 0.6.0
+appVersion: "0.6.0"
 kubeVersion: ">=1.29.0-0"
 home: https://github.com/vicotrbb/devboxes
 icon: https://raw.githubusercontent.com/vicotrbb/devboxes/main/docs/assets/devboxes-mark.svg
@@ -16,9 +16,9 @@ annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/category: integration-delivery
   artifacthub.io/changes: |
-    - kind: changed
-      description: Update JavaScript, Rust, Python, container, and GitHub Actions dependencies
-    - kind: fixed
-      description: Adapt PKCE verifier generation to the Rand 0.10 API
+    - kind: added
+      description: Add opt-in namespace-per-tenant isolation across Helm, API, CLI, and dashboard
+    - kind: added
+      description: Add tenant-specific RBAC, quotas, network policies, presets, GPU profiles, and images
     - kind: security
-      description: Update vulnerable transitive JavaScript parsing and expansion dependencies
+      description: Add Secret-backed principals, role enforcement, and tenant-scoped Insights data

@@ -4,6 +4,8 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-27
+
 ### Added
 
 - Added opt-in namespace-per-tenant isolation across Helm, the controller API, CLI,
@@ -167,7 +169,8 @@ All notable changes to Devboxes are documented here. The project follows [Keep a
 - Portable Helm chart with values schema, namespace-scoped RBAC, configurable storage, ingress, LoadBalancer or NodePort SSH, ServiceMonitor, and disruption budget.
 - macOS and Linux CLI releases, SHA-256 verification installer, GHCR images, OCI chart publishing, image provenance attestations, and clean Kind install CI.
 
-[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/vicotrbb/devboxes/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/vicotrbb/devboxes/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/vicotrbb/devboxes/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/vicotrbb/devboxes/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/vicotrbb/devboxes/compare/v0.3.0...v0.4.0
