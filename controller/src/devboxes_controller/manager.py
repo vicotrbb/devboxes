@@ -60,13 +60,16 @@ from .resources import (
 
 logger = logging.getLogger(__name__)
 
+_SCALE_CONFLICT_ATTEMPTS = 5
+_SCALE_CONFLICT_BACKOFF_SECONDS = 0.05
+
 
 class DevboxNotFoundError(Exception):
     """Signal that a requested managed devbox does not exist."""
 
 
 class DevboxConflictError(Exception):
-    """Signal that a requested devbox name is already active."""
+    """Signal that a devbox operation conflicts with managed resource state."""
 
 
 class TenantQuotaExceededError(Exception):
@@ -440,58 +443,67 @@ class DevboxManager:
         tenant: TenantConfig,
     ) -> Devbox:
         """Scale a devbox while holding its lifecycle lock."""
-        try:
-            deployment = await asyncio.to_thread(
-                self.apps.read_namespaced_deployment,
-                resource,
-                tenant.namespace,
-            )
-            if not self._belongs_to_tenant(deployment, tenant):
-                raise DevboxNotFoundError(name)
-            if replicas == 1:
-                deployment = await self._prepare_insights_template(deployment, tenant)
-                annotations = deployment.metadata.annotations or {}
-                ttl_hours = _ttl_hours(
-                    annotations.get(ANNOTATION_TTL_HOURS),
-                    self.settings.default_ttl_hours,
-                    self.settings.tenant_max_ttl_hours(tenant),
+        for attempt in range(_SCALE_CONFLICT_ATTEMPTS):
+            try:
+                deployment = await asyncio.to_thread(
+                    self.apps.read_namespaced_deployment,
+                    resource,
+                    tenant.namespace,
                 )
-                metadata_patch: dict[str, Any] = {
-                    "annotations": {
-                        ANNOTATION_AUTO_STOPPED_AT: None,
-                        ANNOTATION_EXPIRES_AT: (
-                            datetime.now(UTC) + timedelta(hours=ttl_hours)
-                        ).isoformat(),
+                if not self._belongs_to_tenant(deployment, tenant):
+                    raise DevboxNotFoundError(name)
+                if replicas == 1:
+                    deployment = await self._prepare_insights_template(deployment, tenant)
+                    annotations = deployment.metadata.annotations or {}
+                    ttl_hours = _ttl_hours(
+                        annotations.get(ANNOTATION_TTL_HOURS),
+                        self.settings.default_ttl_hours,
+                        self.settings.tenant_max_ttl_hours(tenant),
+                    )
+                    metadata_patch: dict[str, Any] = {
+                        "annotations": {
+                            ANNOTATION_AUTO_STOPPED_AT: None,
+                            ANNOTATION_EXPIRES_AT: (
+                                datetime.now(UTC) + timedelta(hours=ttl_hours)
+                            ).isoformat(),
+                        }
                     }
-                }
-                resource_version = getattr(deployment.metadata, "resource_version", None)
-                if resource_version:
-                    metadata_patch["resourceVersion"] = resource_version
-                await asyncio.to_thread(
-                    self.apps.patch_namespaced_deployment,
-                    resource,
-                    tenant.namespace,
-                    {
-                        "metadata": metadata_patch,
-                        "spec": {"replicas": 1},
-                    },
-                )
-            else:
-                scale_patch: dict[str, Any] = {"spec": {"replicas": replicas}}
-                resource_version = getattr(deployment.metadata, "resource_version", None)
-                if resource_version:
-                    scale_patch["metadata"] = {"resourceVersion": resource_version}
-                await asyncio.to_thread(
-                    self.apps.patch_namespaced_deployment_scale,
-                    resource,
-                    tenant.namespace,
-                    scale_patch,
-                )
-        except ApiException as error:
-            if error.status == 404:
-                raise DevboxNotFoundError(name) from error
-            self._raise_quota(error, tenant)
-            raise
+                    resource_version = getattr(deployment.metadata, "resource_version", None)
+                    if resource_version:
+                        metadata_patch["resourceVersion"] = resource_version
+                    await asyncio.to_thread(
+                        self.apps.patch_namespaced_deployment,
+                        resource,
+                        tenant.namespace,
+                        {
+                            "metadata": metadata_patch,
+                            "spec": {"replicas": 1},
+                        },
+                    )
+                else:
+                    scale_patch: dict[str, Any] = {"spec": {"replicas": replicas}}
+                    resource_version = getattr(deployment.metadata, "resource_version", None)
+                    if resource_version:
+                        scale_patch["metadata"] = {"resourceVersion": resource_version}
+                    await asyncio.to_thread(
+                        self.apps.patch_namespaced_deployment_scale,
+                        resource,
+                        tenant.namespace,
+                        scale_patch,
+                    )
+                break
+            except ApiException as error:
+                if error.status == 404:
+                    raise DevboxNotFoundError(name) from error
+                if error.status == 409:
+                    if attempt + 1 == _SCALE_CONFLICT_ATTEMPTS:
+                        raise DevboxConflictError(
+                            f"devbox {name!r} changed concurrently; retry the request"
+                        ) from error
+                    await asyncio.sleep(_SCALE_CONFLICT_BACKOFF_SECONDS * (2**attempt))
+                    continue
+                self._raise_quota(error, tenant)
+                raise
         return await self.get(name, tenant)
 
     async def reconcile_insights(self) -> builtins.list[str]:
