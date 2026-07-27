@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use reqwest::{Client, Method, StatusCode};
+use reqwest::{Client, Method, RequestBuilder, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -15,14 +15,16 @@ use crate::models::{
 pub struct ApiClient {
     base_url: String,
     token: String,
+    tenant: Option<String>,
     http: Client,
 }
 
 impl ApiClient {
-    pub fn new(base_url: String, token: String) -> Result<Self> {
+    pub fn new(base_url: String, token: String, tenant: Option<String>) -> Result<Self> {
         Ok(Self {
             base_url,
             token,
+            tenant,
             http: http_client()?,
         })
     }
@@ -133,9 +135,7 @@ impl ApiClient {
 
     pub async fn insights_export(&self, query: &[(String, String)]) -> Result<String> {
         let response = self
-            .http
-            .get(self.url("/api/v1/insights/export", query)?)
-            .bearer_auth(&self.token)
+            .authorize(self.http.get(self.url("/api/v1/insights/export", query)?))
             .header("Accept", "application/json, text/csv")
             .send()
             .await
@@ -169,9 +169,7 @@ impl ApiClient {
         R: DeserializeOwned,
     {
         let mut request = self
-            .http
-            .request(method, self.url(path, &[])?)
-            .bearer_auth(&self.token)
+            .authorize(self.http.request(method, self.url(path, &[])?))
             .header("Accept", "application/json");
         if let Some(body) = body {
             request = request.json(body);
@@ -193,9 +191,7 @@ impl ApiClient {
         R: DeserializeOwned,
     {
         let response = self
-            .http
-            .request(method, self.url(path, query)?)
-            .bearer_auth(&self.token)
+            .authorize(self.http.request(method, self.url(path, query)?))
             .header("Accept", "application/json")
             .send()
             .await
@@ -211,6 +207,15 @@ impl ApiClient {
                 .extend_pairs(query.iter().map(|(key, value)| (key, value)));
         }
         Ok(url)
+    }
+
+    fn authorize(&self, request: RequestBuilder) -> RequestBuilder {
+        let request = request.bearer_auth(&self.token);
+        if let Some(tenant) = &self.tenant {
+            request.header("X-Devboxes-Tenant", tenant)
+        } else {
+            request
+        }
     }
 }
 

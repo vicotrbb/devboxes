@@ -32,7 +32,8 @@ By participating, you agree to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) a
 ## Engineering expectations
 
 - Preserve explicit persistence semantics: TTL and stop never delete a PVC.
-- Keep Kubernetes permissions namespace-scoped and workspace service accounts tokenless.
+- Keep Kubernetes permissions namespace-scoped and workspace service accounts tokenless;
+  tenancy changes must prove cross-namespace and cross-principal denial.
 - Do not add plaintext credentials, example secrets, telemetry, or external calls without explicit user control.
 - Maintain both `LoadBalancer` and `NodePort` SSH paths.
 - Keep the CLI usable in scripts: errors go to stderr, JSON remains stable within a release line, and tokens should not be required on command lines.

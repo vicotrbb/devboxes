@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from devboxes_controller.config import Settings, TenantConfig
 from devboxes_controller.manager import DevboxConflictError, DevboxNotFoundError
 from devboxes_controller.models import (
     CreateDevboxRequest,
@@ -20,10 +21,12 @@ def sample_devbox(
     state: DevboxState = DevboxState.READY,
     preset: Preset = Preset.MEDIUM,
     gpu: GpuAllocation | None = None,
+    tenant: str = "default",
 ) -> Devbox:
     now = datetime.now(UTC)
     ready = state is DevboxState.READY
     return Devbox(
+        tenant=tenant,
         name=name,
         state=state,
         preset=preset,
@@ -50,7 +53,11 @@ def sample_devbox(
 
 
 class FakeManager:
-    def __init__(self) -> None:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or Settings(
+            access_token="test-access-token-at-least-32-characters"
+        )
+        default_tenant = self.settings.default_tenant
         self.boxes = [
             sample_devbox(
                 gpu=GpuAllocation(
@@ -58,28 +65,53 @@ class FakeManager:
                     display_name="NVIDIA L4",
                     resource_name="nvidia.com/gpu",
                     count=1,
-                )
+                ),
+                tenant=default_tenant,
             ),
-            sample_devbox("paperclip", DevboxState.STOPPED, Preset.SMALL),
-            sample_devbox("nightly", DevboxState.STARTING, Preset.LARGE),
+            sample_devbox(
+                "paperclip",
+                DevboxState.STOPPED,
+                Preset.SMALL,
+                tenant=default_tenant,
+            ),
+            sample_devbox(
+                "nightly",
+                DevboxState.STARTING,
+                Preset.LARGE,
+                tenant=default_tenant,
+            ),
         ]
 
     async def ready(self) -> bool:
         return True
 
-    async def list(self) -> list[Devbox]:
-        return self.boxes
+    async def list(self, tenant: TenantConfig | None = None) -> list[Devbox]:
+        tenant_id = (tenant or self.settings.resolve_tenant(None)).id
+        return [box for box in self.boxes if box.tenant == tenant_id]
 
-    async def get(self, name: str) -> Devbox:
+    async def get(self, name: str, tenant: TenantConfig | None = None) -> Devbox:
+        tenant_id = (tenant or self.settings.resolve_tenant(None)).id
         try:
-            return next(box for box in self.boxes if box.name == name)
+            return next(box for box in self.boxes if box.name == name and box.tenant == tenant_id)
         except StopIteration as error:
             raise DevboxNotFoundError(name) from error
 
-    async def create(self, request: CreateDevboxRequest) -> Devbox:
-        if any(box.name == request.name for box in self.boxes):
+    async def create(
+        self,
+        request: CreateDevboxRequest,
+        tenant: TenantConfig | None = None,
+        created_by: str | None = None,
+    ) -> Devbox:
+        tenant = tenant or self.settings.resolve_tenant(None)
+        if any(box.name == request.name and box.tenant == tenant.id for box in self.boxes):
             raise DevboxConflictError(f"devbox {request.name!r} already exists")
-        box = sample_devbox(request.name, DevboxState.STARTING, request.preset)
+        box = sample_devbox(
+            request.name,
+            DevboxState.STARTING,
+            request.preset,
+            tenant=tenant.id,
+        )
+        box.created_by = created_by
         box.repository = request.repository
         if request.gpu is not None:
             profile = request.gpu.profile or "nvidia-l4"
@@ -116,8 +148,13 @@ class FakeManager:
         self.boxes.insert(0, box)
         return box
 
-    async def scale(self, name: str, replicas: int) -> Devbox:
-        box = await self.get(name)
+    async def scale(
+        self,
+        name: str,
+        replicas: int,
+        tenant: TenantConfig | None = None,
+    ) -> Devbox:
+        box = await self.get(name, tenant)
         box.state = DevboxState.STARTING if replicas else DevboxState.STOPPED
         box.pod_ready = False
         box.message = "Preparing workspace and SSH" if replicas else "Compute stopped"
@@ -125,8 +162,14 @@ class FakeManager:
             box.expires_at = datetime.now(UTC) + timedelta(hours=24)
         return box
 
-    async def delete(self, name: str, purge: bool) -> DeleteResult:
-        self.boxes = [box for box in self.boxes if box.name != name]
+    async def delete(
+        self,
+        name: str,
+        purge: bool,
+        tenant: TenantConfig | None = None,
+    ) -> DeleteResult:
+        tenant_id = (tenant or self.settings.resolve_tenant(None)).id
+        self.boxes = [box for box in self.boxes if box.name != name or box.tenant != tenant_id]
         return DeleteResult(name=name, purged=purge, message=f"{name} deleted")
 
     async def stop_expired(self) -> list[str]:

@@ -65,6 +65,8 @@ pub struct CustomImageAllocation {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Devbox {
+    #[serde(default = "default_tenant")]
+    pub tenant: String,
     pub name: String,
     pub state: String,
     pub preset: Preset,
@@ -79,6 +81,8 @@ pub struct Devbox {
     pub restarts: u32,
     pub storage_size: String,
     pub message: Option<String>,
+    #[serde(default)]
+    pub created_by: Option<String>,
     #[serde(default)]
     pub gpu: Option<GpuAllocation>,
     #[serde(default)]
@@ -98,7 +102,22 @@ pub struct DeleteResult {
 #[derive(Debug, Deserialize)]
 pub struct WhoAmI {
     pub user: String,
+    #[serde(default)]
+    pub subject: String,
     pub mode: String,
+    #[serde(default = "default_tenant")]
+    pub tenant: String,
+    #[serde(default = "default_operator_role")]
+    pub role: String,
+    #[serde(default)]
+    pub tenants: Vec<TenantSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TenantSummary {
+    pub id: String,
+    pub display_name: String,
+    pub role: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -106,6 +125,18 @@ pub struct Capabilities {
     pub gpu: GpuCapabilities,
     #[serde(default)]
     pub images: CustomImageCapabilities,
+    #[serde(default)]
+    pub tenancy: Option<TenancyCapabilities>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TenancyCapabilities {
+    pub enabled: bool,
+    pub current: TenantSummary,
+    pub tenants: Vec<TenantSummary>,
+    pub max_ttl_hours: u16,
+    pub allowed_presets: Vec<Preset>,
+    pub resource_quota: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -164,6 +195,8 @@ pub struct InsightsEnvelope<T> {
     pub schema_version: u32,
     pub generated_at: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub tenant: Option<String>,
     pub effective_range: Option<InsightsRange>,
     pub coverage: InsightsCoverage,
     pub capabilities: Value,
@@ -287,14 +320,24 @@ pub struct InsightsPurgeResult {
     pub generated_at: String,
     #[serde(rename = "box")]
     pub box_name: String,
+    #[serde(default = "default_tenant")]
+    pub tenant: String,
     pub purged_instances: u64,
+}
+
+fn default_tenant() -> String {
+    "default".to_owned()
+}
+
+fn default_operator_role() -> String {
+    "operator".to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{CreateDevbox, Devbox, GpuRequest, Preset};
+    use super::{CreateDevbox, Devbox, GpuRequest, Preset, WhoAmI};
 
     #[test]
     fn create_payload_omits_cpu_only_gpu_state() {
@@ -384,5 +427,18 @@ mod tests {
         .unwrap();
 
         assert!(box_info.gpu.is_none());
+    }
+
+    #[test]
+    fn identity_deserialization_accepts_pre_tenancy_controller_responses() {
+        let identity: WhoAmI = serde_json::from_value(json!({
+            "user": "operator",
+            "mode": "bearer"
+        }))
+        .unwrap();
+
+        assert_eq!(identity.tenant, "default");
+        assert_eq!(identity.role, "operator");
+        assert!(identity.tenants.is_empty());
     }
 }

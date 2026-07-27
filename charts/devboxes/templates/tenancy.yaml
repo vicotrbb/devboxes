@@ -1,0 +1,138 @@
+{{- if .Values.tenancy.enabled }}
+{{- $tenantIds := dict }}
+{{- $tenantNamespaces := dict }}
+{{- $gpuProfiles := dict }}
+{{- $imageProfiles := dict }}
+{{- range .Values.gpu.profiles }}
+{{- $_ := set $gpuProfiles .name true }}
+{{- end }}
+{{- range .Values.workspace.customImages.profiles }}
+{{- $_ := set $imageProfiles .name true }}
+{{- end }}
+{{- range $tenant := .Values.tenancy.tenants }}
+{{- if hasKey $tenantIds $tenant.id }}
+{{- fail (printf "tenancy.tenants contains duplicate id %q" $tenant.id) }}
+{{- end }}
+{{- if hasKey $tenantNamespaces $tenant.namespace }}
+{{- fail (printf "tenancy.tenants contains duplicate namespace %q" $tenant.namespace) }}
+{{- end }}
+{{- $_ := set $tenantIds $tenant.id true }}
+{{- $_ := set $tenantNamespaces $tenant.namespace true }}
+{{- $namespaceLabels := default (dict) $tenant.namespaceLabels }}
+{{- if or (eq $tenant.namespace "default") (hasPrefix "kube-" $tenant.namespace) }}
+{{- fail (printf "tenant %q must use a non-system Kubernetes namespace" $tenant.id) }}
+{{- end }}
+{{- if or (hasKey $namespaceLabels "app.kubernetes.io/part-of") (hasKey $namespaceLabels "devboxes.bonalab.org/tenant") (hasKey $namespaceLabels "kubernetes.io/metadata.name") }}
+{{- fail (printf "tenant %q namespaceLabels cannot replace Devboxes ownership labels" $tenant.id) }}
+{{- end }}
+{{- if and $tenant.maxTtlHours (gt (int $tenant.maxTtlHours) (int $.Values.controller.maxTtlHours)) }}
+{{- fail (printf "tenant %q maxTtlHours cannot exceed controller.maxTtlHours" $tenant.id) }}
+{{- end }}
+{{- range $profile := $tenant.allowedGpuProfiles }}
+{{- if not (hasKey $gpuProfiles $profile) }}
+{{- fail (printf "tenant %q references unknown GPU profile %q" $tenant.id $profile) }}
+{{- end }}
+{{- end }}
+{{- if $tenant.defaultGpuProfile }}
+{{- if not $.Values.gpu.enabled }}
+{{- fail (printf "tenant %q defaultGpuProfile requires gpu.enabled=true" $tenant.id) }}
+{{- end }}
+{{- if not (hasKey $gpuProfiles $tenant.defaultGpuProfile) }}
+{{- fail (printf "tenant %q references unknown default GPU profile %q" $tenant.id $tenant.defaultGpuProfile) }}
+{{- end }}
+{{- if and (hasKey $tenant "allowedGpuProfiles") (not (has $tenant.defaultGpuProfile $tenant.allowedGpuProfiles)) }}
+{{- fail (printf "tenant %q defaultGpuProfile must be included in allowedGpuProfiles" $tenant.id) }}
+{{- end }}
+{{- end }}
+{{- range $profile := $tenant.allowedImageProfiles }}
+{{- if not (hasKey $imageProfiles $profile) }}
+{{- fail (printf "tenant %q references unknown image profile %q" $tenant.id $profile) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if not (hasKey $tenantIds .Values.tenancy.defaultTenant) }}
+{{- fail "tenancy.defaultTenant must name an entry in tenancy.tenants" }}
+{{- end }}
+{{- if and (gt (len .Values.tenancy.principals) 0) (not .Values.tenancy.existingPrincipalSecret) }}
+{{- fail "tenancy.existingPrincipalSecret is required when principals are configured" }}
+{{- end }}
+{{- $subjects := dict }}
+{{- $tokenKeys := dict }}
+{{- range $principal := .Values.tenancy.principals }}
+{{- if hasKey $subjects $principal.subject }}
+{{- fail (printf "tenancy.principals contains duplicate subject %q" $principal.subject) }}
+{{- end }}
+{{- if hasKey $tokenKeys $principal.tokenKey }}
+{{- fail (printf "tenancy.principals contains duplicate tokenKey %q" $principal.tokenKey) }}
+{{- end }}
+{{- $_ := set $subjects $principal.subject true }}
+{{- $_ := set $tokenKeys $principal.tokenKey true }}
+{{- $memberships := dict }}
+{{- range $membership := $principal.memberships }}
+{{- if not (hasKey $tenantIds $membership.tenant) }}
+{{- fail (printf "principal %q references unknown tenant %q" $principal.subject $membership.tenant) }}
+{{- end }}
+{{- if hasKey $memberships $membership.tenant }}
+{{- fail (printf "principal %q has duplicate membership for tenant %q" $principal.subject $membership.tenant) }}
+{{- end }}
+{{- $_ := set $memberships $membership.tenant true }}
+{{- end }}
+{{- if and $principal.defaultTenant (not (hasKey $memberships $principal.defaultTenant)) }}
+{{- fail (printf "principal %q defaultTenant must name one of its memberships" $principal.subject) }}
+{{- end }}
+{{- end }}
+{{- range $tenant := .Values.tenancy.tenants }}
+{{- if $tenant.createNamespace }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $tenant.namespace }}
+  labels:
+    app.kubernetes.io/part-of: devboxes
+    devboxes.bonalab.org/tenant: {{ $tenant.id | quote }}
+    {{- with $tenant.namespaceLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  annotations:
+    helm.sh/resource-policy: keep
+{{- end }}
+{{- with $tenant.resourceQuota }}
+{{- if .enabled }}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ printf "%s-workspaces" (include "devboxes.fullname" $) | trunc 63 | trimSuffix "-" }}
+  namespace: {{ $tenant.namespace }}
+  labels:
+    {{- include "devboxes.labels" $ | nindent 4 }}
+    devboxes.bonalab.org/tenant: {{ $tenant.id | quote }}
+spec:
+  hard:
+    {{- toYaml .hard | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- if $.Values.tenancy.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-workspace-ingress" (include "devboxes.fullname" $) | trunc 63 | trimSuffix "-" }}
+  namespace: {{ $tenant.namespace }}
+  labels:
+    {{- include "devboxes.labels" $ | nindent 4 }}
+    devboxes.bonalab.org/tenant: {{ $tenant.id | quote }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: devboxes-controller
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 2222
+{{- end }}
+{{- end }}
+{{- end }}

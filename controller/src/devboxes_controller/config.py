@@ -1,7 +1,9 @@
 """Validate controller configuration loaded from environment variables."""
 
 import re
+from enum import StrEnum
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
@@ -9,10 +11,15 @@ from kubernetes.utils.quantity import parse_quantity
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .models import Preset
+
 GPU_PROFILE_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$")
 DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$")
 QUALIFIED_NAME_PART_RE = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$")
 LABEL_VALUE_RE = re.compile(r"^(?:[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?)?$")
+PRINCIPAL_SUBJECT_RE = re.compile(r"^[A-Za-z0-9](?:[-_.@A-Za-z0-9]{0,126}[A-Za-z0-9])?$")
+SECRET_KEY_RE = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,251}[A-Za-z0-9])?$")
+RESOURCE_QUOTA_KEY_RE = re.compile(r"^[A-Za-z0-9](?:[-./A-Za-z0-9]{0,251}[A-Za-z0-9])?$")
 SupplementalGroup = Annotated[int, Field(strict=True, ge=1, le=2_147_483_647)]
 
 
@@ -37,6 +44,297 @@ def _valid_qualified_name(value: str, *, require_prefix: bool) -> bool:
         prefix, name = value.split("/", 1)
         return bool(_valid_dns_subdomain(prefix) and QUALIFIED_NAME_PART_RE.fullmatch(name))
     return not require_prefix and bool(QUALIFIED_NAME_PART_RE.fullmatch(value))
+
+
+class TenantRole(StrEnum):
+    """Define the application permissions granted inside one tenant."""
+
+    VIEWER = "viewer"
+    MEMBER = "member"
+    ADMIN = "admin"
+    OPERATOR = "operator"
+
+    @property
+    def can_manage(self) -> bool:
+        """Return whether the role may change ordinary workspace lifecycle state."""
+        return self in {self.MEMBER, self.ADMIN, self.OPERATOR}
+
+    @property
+    def can_purge(self) -> bool:
+        """Return whether the role may permanently remove retained data."""
+        return self in {self.ADMIN, self.OPERATOR}
+
+
+class TenantResourceQuota(BaseModel):
+    """Describe the namespace ResourceQuota policy shown to authenticated clients."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    enabled: bool = True
+    hard: dict[str, str] = Field(default_factory=dict, max_length=32)
+
+    @field_validator("hard")
+    @classmethod
+    def hard_limits_are_valid(cls, value: dict[str, str]) -> dict[str, str]:
+        """Validate bounded positive Kubernetes resource quantities."""
+        normalized: dict[str, str] = {}
+        for raw_key, raw_quantity in value.items():
+            key = raw_key.strip()
+            quantity = str(raw_quantity).strip()
+            if not RESOURCE_QUOTA_KEY_RE.fullmatch(key):
+                raise ValueError(f"invalid ResourceQuota key {raw_key!r}")
+            try:
+                if parse_quantity(quantity) <= 0:
+                    raise ValueError
+            except ValueError as error:
+                raise ValueError(f"ResourceQuota {key!r} must be a positive quantity") from error
+            normalized[key] = quantity
+        return normalized
+
+    @model_validator(mode="after")
+    def enabled_quota_has_limits(self) -> Self:
+        """Reject a quota object that claims enforcement without any limits."""
+        if self.enabled and not self.hard:
+            raise ValueError("enabled ResourceQuota requires at least one hard limit")
+        return self
+
+
+class TenantConfig(BaseModel):
+    """Define one operator-owned namespace and policy domain."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    id: str = Field(min_length=1, max_length=40)
+    display_name: str = Field(alias="displayName", min_length=1, max_length=80)
+    namespace: str = Field(min_length=1, max_length=63)
+    create_namespace: bool = Field(default=False, alias="createNamespace")
+    namespace_labels: dict[str, str] = Field(
+        default_factory=dict,
+        alias="namespaceLabels",
+        max_length=16,
+    )
+    workspace_secret_name: str | None = Field(
+        default=None,
+        alias="workspaceSecretName",
+        max_length=253,
+    )
+    workspace_service_account_name: str | None = Field(
+        default=None,
+        alias="workspaceServiceAccountName",
+        max_length=253,
+    )
+    storage_class: str | None = Field(default=None, alias="storageClass", max_length=253)
+    max_ttl_hours: int | None = Field(default=None, alias="maxTtlHours", ge=1, le=168)
+    allowed_presets: list[Preset] = Field(
+        default_factory=lambda: list(Preset),
+        alias="allowedPresets",
+        min_length=1,
+        max_length=3,
+    )
+    allowed_gpu_profiles: list[str] | None = Field(
+        default=None,
+        alias="allowedGpuProfiles",
+        max_length=32,
+    )
+    default_gpu_profile: str | None = Field(
+        default=None,
+        alias="defaultGpuProfile",
+        max_length=40,
+    )
+    allowed_image_profiles: list[str] | None = Field(
+        default=None,
+        alias="allowedImageProfiles",
+        max_length=32,
+    )
+    resource_quota: TenantResourceQuota | None = Field(default=None, alias="resourceQuota")
+
+    @field_validator("id")
+    @classmethod
+    def id_is_safe(cls, value: str) -> str:
+        """Keep tenant IDs stable across HTTP, CLI, labels, and token claims."""
+        value = value.strip().lower()
+        if not GPU_PROFILE_NAME_RE.fullmatch(value):
+            raise ValueError(
+                "use 1-40 lowercase letters, digits, or hyphens; start and end alphanumeric"
+            )
+        return value
+
+    @field_validator("display_name")
+    @classmethod
+    def display_name_is_not_blank(cls, value: str) -> str:
+        """Normalize the user-visible tenant name."""
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("namespace")
+    @classmethod
+    def namespace_is_safe(cls, value: str) -> str:
+        """Require the namespace-per-tenant isolation unit to be a DNS label."""
+        value = value.strip().lower()
+        if not DNS_LABEL_RE.fullmatch(value) or value == "default" or value.startswith("kube-"):
+            raise ValueError("must be a valid non-system Kubernetes namespace name")
+        return value
+
+    @field_validator("namespace_labels")
+    @classmethod
+    def namespace_labels_are_safe(cls, value: dict[str, str]) -> dict[str, str]:
+        """Validate labels without allowing tenant ownership metadata to be replaced."""
+        reserved = {
+            "app.kubernetes.io/part-of",
+            "devboxes.bonalab.org/tenant",
+            "kubernetes.io/metadata.name",
+        }
+        normalized: dict[str, str] = {}
+        for raw_key, raw_value in value.items():
+            key = raw_key.strip()
+            label_value = str(raw_value).strip()
+            if key in reserved:
+                raise ValueError(f"namespaceLabels cannot override reserved label {key!r}")
+            if not _valid_qualified_name(key, require_prefix=False):
+                raise ValueError(f"invalid namespace label key {raw_key!r}")
+            if not LABEL_VALUE_RE.fullmatch(label_value):
+                raise ValueError(f"invalid namespace label value for {key!r}")
+            normalized[key] = label_value
+        return normalized
+
+    @field_validator(
+        "workspace_secret_name",
+        "workspace_service_account_name",
+    )
+    @classmethod
+    def optional_resource_name_is_safe(cls, value: str | None) -> str | None:
+        """Validate optional namespaced Kubernetes resource names."""
+        if value is None or not value.strip():
+            return None
+        value = value.strip().lower()
+        if not _valid_dns_subdomain(value):
+            raise ValueError("must be a valid Kubernetes DNS subdomain")
+        return value
+
+    @field_validator("storage_class")
+    @classmethod
+    def optional_storage_class_is_safe(cls, value: str | None) -> str | None:
+        """Normalize the optional per-tenant StorageClass override."""
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if not _valid_dns_subdomain(value):
+            raise ValueError("must be a valid Kubernetes DNS subdomain")
+        return value
+
+    @field_validator("allowed_presets")
+    @classmethod
+    def presets_are_unique(cls, value: list[Preset]) -> list[Preset]:
+        """Reject ambiguous duplicate policy entries."""
+        if len(value) != len(set(value)):
+            raise ValueError("allowedPresets must contain unique values")
+        return value
+
+    @field_validator("allowed_gpu_profiles", "allowed_image_profiles")
+    @classmethod
+    def profile_names_are_safe(cls, value: list[str] | None) -> list[str] | None:
+        """Normalize optional allowlists; an empty list deliberately allows none."""
+        if value is None:
+            return None
+        normalized = [item.strip().lower() for item in value]
+        if any(not GPU_PROFILE_NAME_RE.fullmatch(item) for item in normalized):
+            raise ValueError("profile allowlists must contain valid profile names")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("profile allowlists must contain unique values")
+        return normalized
+
+    @field_validator("default_gpu_profile")
+    @classmethod
+    def default_gpu_profile_is_safe(cls, value: str | None) -> str | None:
+        """Normalize an optional tenant-specific accelerator default."""
+        if value is None or not value.strip():
+            return None
+        value = value.strip().lower()
+        if not GPU_PROFILE_NAME_RE.fullmatch(value):
+            raise ValueError("defaultGpuProfile must contain a valid profile name")
+        return value
+
+
+class TenantMembership(BaseModel):
+    """Grant one principal a role in one configured tenant."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tenant: str = Field(min_length=1, max_length=40)
+    role: Literal["viewer", "member", "admin"] = "member"
+
+    @field_validator("tenant")
+    @classmethod
+    def tenant_is_safe(cls, value: str) -> str:
+        """Normalize the referenced tenant ID."""
+        value = value.strip().lower()
+        if not GPU_PROFILE_NAME_RE.fullmatch(value):
+            raise ValueError("must reference a valid tenant ID")
+        return value
+
+
+class PrincipalConfig(BaseModel):
+    """Define one human or automation identity without embedding its token."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    subject: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(alias="displayName", min_length=1, max_length=80)
+    token_key: str = Field(alias="tokenKey", min_length=1, max_length=253)
+    memberships: list[TenantMembership] = Field(min_length=1, max_length=32)
+    default_tenant: str | None = Field(default=None, alias="defaultTenant", max_length=40)
+
+    @field_validator("subject")
+    @classmethod
+    def subject_is_safe(cls, value: str) -> str:
+        """Keep subjects unambiguous in signed sessions and audit annotations."""
+        value = value.strip()
+        if not PRINCIPAL_SUBJECT_RE.fullmatch(value):
+            raise ValueError(
+                "use 1-128 letters, digits, dots, underscores, hyphens, or @ characters"
+            )
+        return value
+
+    @field_validator("display_name")
+    @classmethod
+    def display_name_is_not_blank(cls, value: str) -> str:
+        """Normalize the user-facing principal name."""
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("token_key")
+    @classmethod
+    def token_key_is_safe(cls, value: str) -> str:
+        """Prevent traversal outside the mounted Kubernetes Secret directory."""
+        value = value.strip()
+        if not SECRET_KEY_RE.fullmatch(value):
+            raise ValueError("must be a valid Kubernetes Secret data key")
+        return value
+
+    @field_validator("default_tenant")
+    @classmethod
+    def default_tenant_is_safe(cls, value: str | None) -> str | None:
+        """Normalize an optional per-principal default tenant."""
+        if value is None or not value.strip():
+            return None
+        value = value.strip().lower()
+        if not GPU_PROFILE_NAME_RE.fullmatch(value):
+            raise ValueError("must reference a valid tenant ID")
+        return value
+
+    @model_validator(mode="after")
+    def memberships_are_unique(self) -> Self:
+        """Require exactly one role per tenant and a reachable default."""
+        tenant_ids = [membership.tenant for membership in self.memberships]
+        if len(tenant_ids) != len(set(tenant_ids)):
+            raise ValueError("principal memberships must reference unique tenants")
+        if self.default_tenant is not None and self.default_tenant not in tenant_ids:
+            raise ValueError("defaultTenant must name one of the principal memberships")
+        return self
 
 
 class GpuToleration(BaseModel):
@@ -347,6 +645,11 @@ class Settings(BaseSettings):
     workspace_load_balancer_class: str | None = None
     workspace_external_traffic_policy: Literal["Cluster", "Local"] = "Cluster"
     workspace_load_balancer_source_ranges: list[str] = Field(default_factory=list)
+    multi_tenancy_enabled: bool = False
+    default_tenant: str = "default"
+    tenants: list[TenantConfig] = Field(default_factory=list, max_length=64)
+    principals: list[PrincipalConfig] = Field(default_factory=list, max_length=256)
+    principal_token_directory: str = "/var/run/secrets/devboxes/principals"  # noqa: S105 - mounted Secret path
     access_token: SecretStr
     default_ttl_hours: int = Field(default=24, le=168)
     max_ttl_hours: int = Field(default=168, le=168)
@@ -475,6 +778,25 @@ class Settings(BaseSettings):
             raise ValueError("access token must contain at least 32 characters")
         return value
 
+    @field_validator("default_tenant")
+    @classmethod
+    def default_tenant_is_safe(cls, value: str) -> str:
+        """Keep the installation default usable as a tenant identifier."""
+        value = value.strip().lower()
+        if not GPU_PROFILE_NAME_RE.fullmatch(value):
+            raise ValueError("default_tenant must be a valid tenant ID")
+        return value
+
+    @field_validator("principal_token_directory")
+    @classmethod
+    def principal_token_directory_is_absolute(cls, value: str) -> str:
+        """Keep principal Secret reads inside one explicit mounted directory."""
+        value = value.strip().rstrip("/")
+        path = Path(value)
+        if not value or not path.is_absolute() or ".." in path.parts:
+            raise ValueError("principal_token_directory must be an absolute non-root path")
+        return value
+
     @model_validator(mode="after")
     def settings_are_consistent(self) -> Self:
         """Validate relationships between independently parsed settings."""
@@ -510,27 +832,188 @@ class Settings(BaseSettings):
             raise ValueError("custom image profile references must be unique")
         if self.custom_images_enabled and not custom_image_names:
             raise ValueError("custom_images_enabled requires at least one custom image profile")
+        tenant_ids = [tenant.id for tenant in self.tenants]
+        tenant_namespaces = [tenant.namespace for tenant in self.tenants]
+        if len(tenant_ids) != len(set(tenant_ids)):
+            raise ValueError("tenant IDs must be unique")
+        if len(tenant_namespaces) != len(set(tenant_namespaces)):
+            raise ValueError("tenant namespaces must be unique")
+        principal_subjects = [principal.subject for principal in self.principals]
+        principal_token_keys = [principal.token_key for principal in self.principals]
+        if len(principal_subjects) != len(set(principal_subjects)):
+            raise ValueError("principal subjects must be unique")
+        if len(principal_token_keys) != len(set(principal_token_keys)):
+            raise ValueError("principal token keys must be unique")
+        if self.multi_tenancy_enabled:
+            if not self.tenants:
+                raise ValueError("multi_tenancy_enabled requires at least one tenant")
+            if self.default_tenant not in tenant_ids:
+                raise ValueError("default_tenant must name a configured tenant")
+            configured_gpu_profiles = set(profile_names)
+            configured_image_profiles = set(custom_image_names)
+            for tenant in self.tenants:
+                tenant_max_ttl = tenant.max_ttl_hours or self.max_ttl_hours
+                if tenant_max_ttl > self.max_ttl_hours:
+                    raise ValueError(
+                        f"tenant {tenant.id!r} maxTtlHours cannot exceed controller maximum"
+                    )
+                unavailable_gpu = set(tenant.allowed_gpu_profiles or []) - configured_gpu_profiles
+                if unavailable_gpu:
+                    raise ValueError(
+                        f"tenant {tenant.id!r} references unknown GPU profiles: "
+                        f"{', '.join(sorted(unavailable_gpu))}"
+                    )
+                if tenant.default_gpu_profile is not None:
+                    if not self.gpu_enabled:
+                        raise ValueError(
+                            f"tenant {tenant.id!r} defaultGpuProfile requires GPU acceleration"
+                        )
+                    if tenant.default_gpu_profile not in configured_gpu_profiles:
+                        raise ValueError(
+                            f"tenant {tenant.id!r} references unknown default GPU profile "
+                            f"{tenant.default_gpu_profile!r}"
+                        )
+                    if (
+                        tenant.allowed_gpu_profiles is not None
+                        and tenant.default_gpu_profile not in tenant.allowed_gpu_profiles
+                    ):
+                        raise ValueError(
+                            f"tenant {tenant.id!r} defaultGpuProfile must be included in "
+                            "allowedGpuProfiles"
+                        )
+                unavailable_images = (
+                    set(tenant.allowed_image_profiles or []) - configured_image_profiles
+                )
+                if unavailable_images:
+                    raise ValueError(
+                        f"tenant {tenant.id!r} references unknown image profiles: "
+                        f"{', '.join(sorted(unavailable_images))}"
+                    )
+            configured_tenants = set(tenant_ids)
+            for principal in self.principals:
+                unavailable_tenants = {
+                    membership.tenant for membership in principal.memberships
+                } - configured_tenants
+                if unavailable_tenants:
+                    raise ValueError(
+                        f"principal {principal.subject!r} references unknown tenants: "
+                        f"{', '.join(sorted(unavailable_tenants))}"
+                    )
+        elif self.tenants or self.principals:
+            raise ValueError(
+                "tenants and principals require multi_tenancy_enabled=true to avoid "
+                "silently unenforced policy"
+            )
         return self
 
-    def resolve_gpu_profile(self, requested_name: str | None) -> GpuProfile:
+    @property
+    def tenant_configs(self) -> tuple[TenantConfig, ...]:
+        """Return configured tenants or the backward-compatible installation tenant."""
+        if self.multi_tenancy_enabled:
+            return tuple(self.tenants)
+        return (
+            TenantConfig(
+                id=self.default_tenant,
+                displayName=self.display_name,
+                namespace=self.namespace,
+                workspaceSecretName=self.workspace_secret_name,
+                workspaceServiceAccountName=self.workspace_service_account_name,
+                storageClass=self.storage_class,
+                maxTtlHours=self.max_ttl_hours,
+            ),
+        )
+
+    def resolve_tenant(self, tenant_id: str | None) -> TenantConfig:
+        """Resolve one configured tenant without falling back on an unknown value."""
+        requested = (tenant_id or self.default_tenant).strip().lower()
+        for tenant in self.tenant_configs:
+            if tenant.id == requested:
+                return tenant
+        raise ValueError(f"unknown tenant {requested!r}")
+
+    def tenant_max_ttl_hours(self, tenant: TenantConfig) -> int:
+        """Return the effective TTL ceiling for one tenant."""
+        return min(tenant.max_ttl_hours or self.max_ttl_hours, self.max_ttl_hours)
+
+    def tenant_workspace_secret_name(self, tenant: TenantConfig) -> str:
+        """Return the tenant-local Secret mounted into its workspaces."""
+        return tenant.workspace_secret_name or self.workspace_secret_name
+
+    def tenant_workspace_service_account_name(self, tenant: TenantConfig) -> str:
+        """Return the tenant-local no-RBAC workspace ServiceAccount."""
+        return tenant.workspace_service_account_name or self.workspace_service_account_name
+
+    def tenant_storage_class(self, tenant: TenantConfig) -> str | None:
+        """Return the per-tenant or installation StorageClass selection."""
+        return tenant.storage_class or self.storage_class
+
+    def tenant_gpu_profiles(self, tenant: TenantConfig) -> list[GpuProfile]:
+        """Return GPU profiles admitted by installation and tenant policy."""
+        allowed = (
+            set(tenant.allowed_gpu_profiles) if tenant.allowed_gpu_profiles is not None else None
+        )
+        return [
+            profile
+            for profile in self.gpu_profiles
+            if self.gpu_enabled and (allowed is None or profile.name in allowed)
+        ]
+
+    def tenant_default_gpu_profile(self, tenant: TenantConfig) -> str | None:
+        """Return the explicit or inherited GPU default available to one tenant."""
+        available = {profile.name for profile in self.tenant_gpu_profiles(tenant)}
+        if tenant.default_gpu_profile in available:
+            return tenant.default_gpu_profile
+        return self.gpu_default_profile if self.gpu_default_profile in available else None
+
+    def tenant_custom_images(self, tenant: TenantConfig) -> list[CustomImageProfile]:
+        """Return custom images admitted by installation and tenant policy."""
+        allowed = (
+            set(tenant.allowed_image_profiles)
+            if tenant.allowed_image_profiles is not None
+            else None
+        )
+        return [
+            profile
+            for profile in self.custom_images
+            if self.custom_images_enabled and (allowed is None or profile.name in allowed)
+        ]
+
+    def resolve_gpu_profile(
+        self,
+        requested_name: str | None,
+        tenant: TenantConfig | None = None,
+    ) -> GpuProfile:
         """Resolve a user request to one trusted installation profile."""
         if not self.gpu_enabled:
             raise ValueError("GPU acceleration is disabled by the operator")
-        profile_name = requested_name or self.gpu_default_profile
-        for profile in self.gpu_profiles:
+        selected_tenant = tenant or self.resolve_tenant(None)
+        profiles = self.tenant_gpu_profiles(selected_tenant)
+        profile_name = requested_name or self.tenant_default_gpu_profile(selected_tenant)
+        if profile_name is None:
+            available = ", ".join(profile.name for profile in profiles) or "none"
+            raise ValueError(
+                "no default GPU profile is available to this tenant; "
+                f"select an explicit profile from: {available}"
+            )
+        for profile in profiles:
             if profile.name == profile_name:
                 return profile
-        available = ", ".join(profile.name for profile in self.gpu_profiles)
+        available = ", ".join(profile.name for profile in profiles) or "none"
         raise ValueError(f"unknown GPU profile {profile_name!r}; available profiles: {available}")
 
-    def resolve_custom_image(self, selector: str) -> CustomImageProfile:
+    def resolve_custom_image(
+        self,
+        selector: str,
+        tenant: TenantConfig | None = None,
+    ) -> CustomImageProfile:
         """Resolve a profile name or exact approved image reference before pod creation."""
         if not self.custom_images_enabled:
             raise ValueError("custom images are disabled by the operator")
-        for profile in self.custom_images:
+        profiles = self.tenant_custom_images(tenant or self.resolve_tenant(None))
+        for profile in profiles:
             if selector in {profile.name, profile.image}:
                 return profile
-        available = ", ".join(profile.name for profile in self.custom_images)
+        available = ", ".join(profile.name for profile in profiles) or "none"
         raise ValueError(f"unknown custom image {selector!r}; available profiles: {available}")
 
 

@@ -11,7 +11,9 @@ from .models import CreateDevboxRequest, Preset
 MANAGED_BY = "devboxes-controller"
 LABEL_MANAGED_BY = "app.kubernetes.io/managed-by"
 LABEL_NAME = "devboxes.bonalab.org/name"
+LABEL_TENANT = "devboxes.bonalab.org/tenant"
 ANNOTATION_CREATED_AT = "devboxes.bonalab.org/created-at"
+ANNOTATION_CREATED_BY = "devboxes.bonalab.org/created-by"
 ANNOTATION_EXPIRES_AT = "devboxes.bonalab.org/expires-at"
 ANNOTATION_TTL_HOURS = "devboxes.bonalab.org/ttl-hours"
 ANNOTATION_REPOSITORY = "devboxes.bonalab.org/repository"
@@ -56,15 +58,18 @@ def resource_name(name: str) -> str:
     return f"devbox-{name}"
 
 
-def labels(name: str) -> dict[str, str]:
-    """Return ownership and lookup labels for a managed devbox."""
-    return {
+def labels(name: str, tenant_id: str | None = None) -> dict[str, str]:
+    """Return ownership labels, adding tenant identity only in multi-tenant mode."""
+    result = {
         "app.kubernetes.io/name": "devbox",
         "app.kubernetes.io/instance": resource_name(name),
         "app.kubernetes.io/part-of": "devboxes",
         LABEL_MANAGED_BY: MANAGED_BY,
         LABEL_NAME: name,
     }
+    if tenant_id is not None:
+        result[LABEL_TENANT] = tenant_id
+    return result
 
 
 def annotations(
@@ -73,6 +78,7 @@ def annotations(
     instance_id: str | None = None,
     gpu_profile: GpuProfile | None = None,
     custom_image: CustomImageProfile | None = None,
+    created_by: str | None = None,
 ) -> dict[str, str]:
     """Return lifecycle and user-input annotations for a new devbox."""
     now = now or datetime.now(UTC)
@@ -85,6 +91,8 @@ def annotations(
     }
     if request.repository:
         result[ANNOTATION_REPOSITORY] = request.repository
+    if created_by:
+        result[ANNOTATION_CREATED_BY] = created_by
     if instance_id:
         result[ANNOTATION_INSTANCE_ID] = instance_id
     if gpu_profile is not None:
@@ -119,6 +127,9 @@ def build_pvc(
     namespace: str,
     storage_class: str | None,
     instance_id: str | None = None,
+    tenant_id: str = "default",
+    created_by: str | None = None,
+    include_tenant_label: bool = False,
 ) -> dict[str, Any]:
     """Build the persistent home volume claim for a devbox."""
     manifest: dict[str, Any] = {
@@ -127,9 +138,15 @@ def build_pvc(
         "metadata": {
             "name": f"{resource_name(request.name)}-home",
             "namespace": namespace,
-            "labels": labels(request.name),
+            "labels": labels(
+                request.name,
+                tenant_id if include_tenant_label else None,
+            ),
             "annotations": (
-                {ANNOTATION_INSTANCE_ID: instance_id} if instance_id is not None else {}
+                {
+                    **({ANNOTATION_INSTANCE_ID: instance_id} if instance_id is not None else {}),
+                    **({ANNOTATION_CREATED_BY: created_by} if created_by else {}),
+                }
             ),
         },
         "spec": {
@@ -162,10 +179,16 @@ def build_deployment(
     insights_repository_depth: int = 4,
     insights_max_queue_bytes: int = 134_217_728,
     insights_max_queue_age_seconds: int = 604_800,
+    tenant_id: str = "default",
+    created_by: str | None = None,
+    include_tenant_label: bool = False,
 ) -> dict[str, Any]:
     """Build the disposable workspace Deployment for a devbox."""
     name = resource_name(request.name)
-    box_labels = labels(request.name)
+    box_labels = labels(
+        request.name,
+        tenant_id if include_tenant_label else None,
+    )
     effective_workspace_image = workspace_image
     effective_workspace_pull_policy = "IfNotPresent"
     if gpu_profile is not None and gpu_profile.workspace_image is not None:
@@ -176,6 +199,7 @@ def build_deployment(
     env = [
         {"name": "DEVBOX_NAME", "value": request.name},
         {"name": "DEVBOX_PRESET", "value": request.preset.value},
+        {"name": "DEVBOX_TENANT", "value": tenant_id},
     ]
     if request.repository:
         env.append({"name": "DEVBOX_REPOSITORY", "value": request.repository})
@@ -427,6 +451,7 @@ def build_deployment(
         instance_id,
         gpu_profile,
         custom_image,
+        created_by,
     )
     deployment_annotations[ANNOTATION_INSIGHTS_STATE] = (
         "collecting" if insights_enabled else "disabled"
@@ -458,7 +483,12 @@ def build_deployment(
             # cold node or slower registry path.
             "progressDeadlineSeconds": 1800,
             "strategy": {"type": "Recreate"},
-            "selector": {"matchLabels": {LABEL_NAME: request.name}},
+            "selector": {
+                "matchLabels": {
+                    LABEL_NAME: request.name,
+                    **({LABEL_TENANT: tenant_id} if include_tenant_label else {}),
+                }
+            },
             "template": {
                 "metadata": {
                     "labels": box_labels,
@@ -497,6 +527,9 @@ def build_service(
     load_balancer_class: str | None = None,
     external_traffic_policy: str = "Cluster",
     load_balancer_source_ranges: list[str] | None = None,
+    tenant_id: str = "default",
+    created_by: str | None = None,
+    include_tenant_label: bool = False,
 ) -> dict[str, Any]:
     """Build the externally reachable SSH Service for a devbox."""
     port: dict[str, Any] = {
@@ -508,10 +541,13 @@ def build_service(
     if node_port is not None:
         port["nodePort"] = node_port
 
+    selector = {LABEL_NAME: request.name}
+    if include_tenant_label:
+        selector[LABEL_TENANT] = tenant_id
     spec: dict[str, Any] = {
         "type": service_type,
         "externalTrafficPolicy": external_traffic_policy,
-        "selector": {LABEL_NAME: request.name},
+        "selector": selector,
         "ports": [port],
     }
     if load_balancer_class:
@@ -525,8 +561,14 @@ def build_service(
         "metadata": {
             "name": f"{resource_name(request.name)}-ssh",
             "namespace": namespace,
-            "labels": labels(request.name),
-            "annotations": annotations or {},
+            "labels": labels(
+                request.name,
+                tenant_id if include_tenant_label else None,
+            ),
+            "annotations": {
+                **(annotations or {}),
+                **({ANNOTATION_CREATED_BY: created_by} if created_by else {}),
+            },
         },
         "spec": spec,
     }

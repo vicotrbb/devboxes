@@ -7,23 +7,31 @@
     <title>Insights · Devboxes</title>
     <link rel="icon" href="/static/favicon.svg?v={{ version }}" type="image/svg+xml">
     <link rel="stylesheet" href="/static/styles.css?v={{ version }}">
+    <script src="/static/tenant.js?v={{ version }}" defer></script>
     <script src="/static/insights.js?v={{ version }}" defer></script>
   </head>
-  <body class="insights-page" data-insights-enabled="{{ 'true' if insights_enabled else 'false' }}">
+  <body
+    class="insights-page"
+    data-insights-enabled="{{ 'true' if insights_enabled else 'false' }}"
+    data-tenant="{{ tenancy.current.id }}"
+    data-can-purge="{{ 'true' if can_purge else 'false' }}"
+  >
+    {% set tenant_query = '?tenant=' ~ tenancy.current.id if tenancy.enabled else '' %}
     <a class="skip-link" href="#main-content">Skip to Insights</a>
     <header class="app-header">
       <div class="header-leading">
-        <a class="wordmark" href="/" aria-label="Devboxes home">
+        <a class="wordmark" href="/{{ tenant_query }}" aria-label="Devboxes home">
           <span class="wordmark-mark" aria-hidden="true">db</span>
           <span>devboxes</span>
         </a>
         <nav class="primary-nav" aria-label="Primary navigation">
-          <a class="nav-link" href="/">Workbench</a>
-          <a class="nav-link" href="/insights" aria-current="page">Insights</a>
-          <a class="nav-link" href="/docs">Docs</a>
+          <a class="nav-link" href="/{{ tenant_query }}">Workbench</a>
+          <a class="nav-link" href="/insights{{ tenant_query }}" aria-current="page">Insights</a>
+          <a class="nav-link" href="/docs{{ tenant_query }}">Docs</a>
         </nav>
       </div>
       <div class="header-actions">
+        {% include "_tenant_switcher.html" %}
         <span class="cluster-state"><span aria-hidden="true"></span> {{ cluster_name }} connected</span>
         <button class="button button-quiet" id="insights-refresh" type="button">Refresh</button>
         <button class="button button-quiet" id="logout-button" type="button">Sign out</button>
@@ -33,7 +41,9 @@
     <main class="app-main insights-main" id="main-content" tabindex="-1">
       <section class="page-intro insights-intro" aria-labelledby="page-title">
         <div>
-          <p class="context-line">Private by design · opt-in collection</p>
+          <p class="context-line">
+            {{ tenancy.current.display_name }} · tenant-scoped metrics
+          </p>
           <h1 id="page-title">Understand the work, not the worker.</h1>
           <p>
             AI usage and source activity stay separate. Insights stores numeric metrics and Git
@@ -55,7 +65,7 @@
           </p>
           <pre><code>insights:
   enabled: true</code></pre>
-          <a class="button button-primary" href="/docs#insights">Read the privacy and operations guide</a>
+          <a class="button button-primary" href="/docs{{ tenant_query }}#insights">Read the privacy and operations guide</a>
         </div>
       </section>
       {% else %}

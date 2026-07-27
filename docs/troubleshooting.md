@@ -26,12 +26,17 @@ kubectl describe pod -n devboxes \
 Symptoms include `/ready` returning 503, CLI transport failures, or the dashboard failing to list boxes.
 
 1. Confirm the controller pod is Ready and inspect its logs.
-2. Verify the ServiceAccount, Role, and RoleBinding exist in the same namespace.
+2. Verify the controller ServiceAccount exists in the release namespace and a Role plus
+   RoleBinding exists in every configured tenant namespace.
 3. Check Kubernetes API reachability and service-account token mounting on the controller.
-4. Confirm the configured namespace matches the Helm release namespace.
+4. Confirm every configured tenant namespace exists and the RoleBinding references the
+   controller ServiceAccount in the release namespace.
 5. Review NetworkPolicy or API-server authorization denials.
 
-The controller needs namespaced access to Deployments, Services, Pods, PVCs, and its generated per-workspace Insights Secrets. It does not need cluster-wide RBAC.
+The controller needs namespaced access to Deployments, Services, Pods, PVCs, and its
+generated per-workspace Insights Secrets. It does not need cluster-wide RBAC. Readiness lists
+Deployments in every configured tenant, so one missing RoleBinding deliberately makes the
+controller not ready.
 
 If Insights is enabled, inspect the central PVC and controller logs for SQLite open, migration, or locking errors. The volume must support normal filesystem locking and WAL. Avoid NFS-backed claims with unreliable lock semantics.
 
@@ -52,6 +57,15 @@ intentional and issues no token; restart `devbox login` to make a new request. N
 master token into terminal output as a workaround.
 
 For browser `403 Missing or invalid CSRF token`, clear the site cookies and log in again. Confirm that an HTTPS installation sets `controller.cookieSecure=true`. A secure cookie is not sent over plain HTTP.
+
+For `403 Tenant access is forbidden`, list the principal's configured memberships, verify
+`X-Devboxes-Tenant`, `--tenant`, or `DEVBOX_TENANT`, and restart the controller after a
+principal Secret or Helm-policy change. Unknown tenants and known-but-unauthorized tenants
+intentionally return the same error.
+
+For `403 The current tenant role is read-only`, select a membership with `member` or `admin`
+authority or ask the operator to change the role. Permanent home or Insights purge requires
+`admin`; the master identity has `operator` authority in every tenant.
 
 ## TLS or URL validation fails
 
@@ -80,6 +94,24 @@ kubectl get secret devboxes-workspace -n devboxes \
 ```
 
 If the pod is Ready but the box still starts, inspect the Service next.
+
+## Tenant quota rejects create or start
+
+A direct Kubernetes `ResourceQuota` admission denial is returned as `409 Conflict`.
+Pod-level enforcement may instead appear asynchronously as a `degraded` workspace with a
+quota message from its Deployment. In either case, inspect the active tenant's configured
+ceiling and current usage:
+
+```bash
+devbox --tenant platform list
+kubectl describe resourcequota -n devboxes-platform
+kubectl get events -n devboxes-platform --sort-by=.lastTimestamp
+```
+
+Stopping a box releases pod CPU, memory, and GPU requests but retains its PVC and storage
+quota. Delete without purge also retains the PVC. Increase quota, stop or purge an approved
+box, or select a smaller allowed preset based on the constrained resource. Do not bypass
+quota by moving resources manually to another tenant namespace.
 
 ## A GPU box remains starting
 

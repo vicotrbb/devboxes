@@ -137,6 +137,8 @@ class Devbox(BaseModel):
     """Represent the observable state of one managed devbox."""
 
     name: str
+    tenant: str = "default"
+    created_by: str | None = None
     state: DevboxState
     preset: Preset
     created_at: datetime
@@ -162,11 +164,34 @@ class DevboxList(BaseModel):
     items: list[Devbox]
 
 
+class TenantSummary(BaseModel):
+    """Expose one tenant context available to the current identity."""
+
+    id: str
+    display_name: str
+    role: str
+
+
 class WhoAmI(BaseModel):
     """Describe the authenticated controller identity and mechanism."""
 
     user: str
+    subject: str | None = None
     mode: str
+    tenant: str = "default"
+    role: str = "operator"
+    tenants: list[TenantSummary] = Field(default_factory=list)
+
+
+class TenancyCapabilities(BaseModel):
+    """Describe the active tenant and its operator-owned policy."""
+
+    enabled: bool
+    current: TenantSummary
+    tenants: list[TenantSummary]
+    max_ttl_hours: int
+    allowed_presets: list[Preset]
+    resource_quota: dict[str, str] = Field(default_factory=dict)
 
 
 class GpuProfileSummary(BaseModel):
@@ -210,6 +235,7 @@ class Capabilities(BaseModel):
 
     gpu: GpuCapabilities
     images: CustomImageCapabilities
+    tenancy: TenancyCapabilities | None = None
 
 
 class CliTokenRequest(BaseModel):

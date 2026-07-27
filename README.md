@@ -23,13 +23,19 @@ Each workspace includes Rust, Node.js, Python, `uv`, GitHub CLI, Codex CLI, Clau
 - A Rust `devbox` CLI for create, list, inspect, SSH, start, stop, delete, custom-image profiles, and opt-in Insights workflows.
 - A FastAPI controller with an authenticated API, accessible browser workbench, Insights dashboard, documentation, metrics, health checks, and TTL cleanup.
 - A versioned Helm chart with values schema validation and namespace-scoped RBAC.
+- Optional namespace-per-tenant isolation with principal roles, quotas, policy catalogs, and
+  tenant-scoped Insights.
 - Optional operator-approved GPU profiles for NVIDIA, AMD, Intel, partitioned, or shared accelerators.
 - Optional operator-approved custom image profiles for pod-local services or vetted workspace derivatives.
 - Multi-architecture controller and workspace images for `linux/amd64` and `linux/arm64`.
 - Persistent SSH host identity, shell state, tool installs, account state, and source under `/home/dev`.
 - GitHub Releases with macOS and Linux CLI binaries and SHA-256 checksums.
 
-Devboxes is currently a single-operator system: one shared token controls every box in one installation. It is suitable for a trusted personal cluster or trusted operator group, not mutually untrusted tenants.
+Devboxes defaults to a backward-compatible single-operator installation. Operators can
+enable [multi-tenancy](docs/multi-tenancy.md) to give users or teams independent Kubernetes
+namespaces, credentials, storage, SSH identity, policy catalogs, resource quotas, and
+tenant-scoped lifecycle and Insights access. The master token remains an
+installation-wide operator credential.
 
 ## Requirements
 
@@ -93,6 +99,53 @@ helm install devboxes oci://ghcr.io/vicotrbb/charts/devboxes \
 ```
 
 The chart never embeds credential values. It references existing Kubernetes Secrets so it also works with External Secrets Operator, Sealed Secrets, SOPS, Infisical, Vault, and other secret-management workflows.
+
+### Enable multi-tenancy
+
+Multi-tenancy is opt-in and uses one Kubernetes namespace per tenant. Operators define
+principal memberships and roles in Helm while storing every principal token in an existing
+Secret:
+
+```yaml
+tenancy:
+  enabled: true
+  defaultTenant: platform
+  existingPrincipalSecret: devboxes-principals
+  tenants:
+    - id: platform
+      displayName: Platform Engineering
+      namespace: devboxes-platform
+      createNamespace: true
+      workspaceSecretName: devboxes-platform-workspace
+      allowedPresets: [small, medium]
+      maxTtlHours: 72
+      resourceQuota:
+        enabled: true
+        hard:
+          requests.cpu: "8"
+          requests.memory: 32Gi
+          requests.storage: 500Gi
+  principals:
+    - subject: alice@example.com
+      displayName: Alice
+      tokenKey: alice-token
+      defaultTenant: platform
+      memberships:
+        - tenant: platform
+          role: admin
+```
+
+Users can switch their authorized context consistently in the CLI or dashboard:
+
+```bash
+devbox tenant list
+devbox tenant use platform
+devbox --tenant platform create atlas --preset medium --ssh
+```
+
+Read [multi-tenancy](docs/multi-tenancy.md) before rollout for the complete role matrix,
+Secret provisioning, isolation guarantees, quota behavior, Insights migration, and
+rollback contract.
 
 ### Configure dashboard ingress
 
@@ -322,7 +375,10 @@ Devboxes controller ─── Kubernetes API
           └─ Insights SQLite PVC (optional central history)
 ```
 
-The controller watches only its release namespace and receives namespace-scoped RBAC. Workspace pods do not receive Kubernetes service-account tokens. See [architecture](docs/architecture.md) for resource ownership, persistence, readiness, and threat boundaries.
+The controller receives only namespaced RBAC: the release namespace in default mode or each
+explicitly configured tenant namespace in multi-tenant mode. Workspace pods do not receive
+Kubernetes service-account tokens. See [architecture](docs/architecture.md) for resource
+ownership, persistence, readiness, and threat boundaries.
 
 ## Development
 

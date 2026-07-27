@@ -4,19 +4,33 @@ The controller exposes a small JSON API under `/api/v1`. The Rust CLI is the ref
 
 ## Authentication
 
-Automation requests may use the master controller token. Browser-authorized CLI requests
-use a scoped, expiring token with the same bearer header:
+Automation requests may use the master controller token or a configured principal token.
+Browser-authorized CLI requests use a scoped, expiring token with the same bearer header:
 
 ```http
 Authorization: Bearer CONTROLLER_ACCESS_TOKEN
 Accept: application/json
 ```
 
-Browser login exchanges the master token for an HTTP-only, SameSite `devboxes_session`
-cookie and a readable `devboxes_csrf` cookie. Every browser mutation sends the CSRF value
-in `X-Devboxes-CSRF`. API clients using bearer authentication do not need a CSRF header.
+Browser login exchanges a submitted master or principal token for an HTTP-only, SameSite
+`devboxes_session` cookie and a readable `devboxes_csrf` cookie. Every browser mutation
+sends the CSRF value in `X-Devboxes-CSRF`. API clients using bearer authentication do not
+need a CSRF header.
 
-The shared token controls every devbox in the installation, including permanent purge. Do not expose it in URLs, shell history, logs, or source control.
+The master token controls every tenant, including permanent purge. Principal access is
+limited by live tenant memberships. Do not expose either credential in URLs, shell history,
+logs, or source control.
+
+When multi-tenancy is enabled, select a tenant with:
+
+```http
+X-Devboxes-Tenant: platform
+```
+
+Omitting the header selects the identity's default tenant. The controller resolves and
+authorizes the tenant before any lifecycle, capability, or Insights work. Unknown and
+unauthorized tenant IDs both return `403`. Browser requests carry the same header from the
+tenant switcher; HTML pages use the equivalent `?tenant=platform` navigation query.
 
 ## Endpoints
 
@@ -29,7 +43,7 @@ The shared token controls every devbox in the installation, including permanent 
 | `POST` | `/auth/cli/authorize` | 303 | Approve or deny a CSRF-protected CLI request |
 | `POST` | `/api/v1/auth/cli/token` | 200 | Exchange a one-time code and PKCE verifier |
 | `GET` | `/api/v1/whoami` | 200 | Verify authentication and identity |
-| `GET` | `/api/v1/capabilities` | 200 | Discover installation GPU and custom image profiles |
+| `GET` | `/api/v1/capabilities` | 200 | Discover active tenant policy, GPU, and image profiles |
 | `GET` | `/api/v1/devboxes` | 200 | List managed devboxes |
 | `POST` | `/api/v1/devboxes` | 201 | Create a devbox |
 | `GET` | `/api/v1/devboxes/{name}` | 200 | Read one devbox |
@@ -43,7 +57,7 @@ The shared token controls every devbox in the installation, including permanent 
 | `GET` | `/api/v1/insights/export` | 200 | Export a filtered JSON or CSV summary, or an online SQLite backup |
 | `DELETE` | `/api/v1/insights` | 200 | Explicitly purge history by box or instance ID |
 
-The list endpoint is not paginated. One installation is intended for a small, trusted operator scope.
+The list endpoint is not paginated and returns only the active tenant's boxes.
 
 The CLI authorization route accepts only `client_id=devbox-cli`, an exact numeric HTTP
 loopback redirect ending in `/callback`, a high-entropy state, a PKCE challenge, and
@@ -54,10 +68,40 @@ responses are `no-store`, codes are single-use, and no refresh token is returned
 
 ## Installation capabilities
 
-Authenticated clients use `GET /api/v1/capabilities` to discover optional installation features. Capability discovery returns only the safe user contract, not profile images, pull policies, resource limits, RuntimeClasses, supplemental groups, selectors, or tolerations:
+Authenticated clients use `GET /api/v1/capabilities` to discover the selected tenant's
+effective policy and optional installation features. Capability discovery returns only the
+safe user contract, not namespaces outside the active tenant, workspace Secrets, profile
+images, pull policies, resource limits, RuntimeClasses, supplemental groups, selectors, or
+tolerations:
 
 ```json
 {
+  "tenancy": {
+    "enabled": true,
+    "current": {
+      "id": "platform",
+      "display_name": "Platform Engineering",
+      "role": "admin"
+    },
+    "tenants": [
+      {
+        "id": "platform",
+        "display_name": "Platform Engineering",
+        "role": "admin"
+      },
+      {
+        "id": "research",
+        "display_name": "Research",
+        "role": "viewer"
+      }
+    ],
+    "max_ttl_hours": 72,
+    "allowed_presets": ["small", "medium"],
+    "resource_quota": {
+      "requests.cpu": "8",
+      "requests.memory": "32Gi"
+    }
+  },
   "gpu": {
     "enabled": true,
     "default_profile": "nvidia-l4",
@@ -89,7 +133,15 @@ Authenticated clients use `GET /api/v1/capabilities` to discover optional instal
 }
 ```
 
-When GPU support is disabled, `gpu.enabled` is false, `default_profile` is null, and its `profiles` is empty. When custom images are disabled, `images.enabled` is false and its `profiles` is empty. Clients should treat new top-level capabilities as additive.
+Only memberships belonging to the current identity appear in `tenancy.tenants`. GPU and
+image catalogs are intersected with tenant allowlists. When GPU support is disabled,
+`gpu.enabled` is false, `default_profile` is null, and its `profiles` is empty. When custom
+images are disabled, `images.enabled` is false and its `profiles` is empty. Clients should
+treat new top-level capabilities as additive.
+
+`GET /api/v1/whoami` returns `user`, stable `subject`, authentication `mode`, active
+`tenant`, active `role`, and the same safe membership summaries. In disabled mode, the
+backward-compatible identity has tenant `default` and role `operator`.
 
 ## Create a devbox
 
@@ -97,6 +149,7 @@ When GPU support is disabled, `gpu.enabled` is false, `default_profile` is null,
 curl --fail-with-body \
   --request POST \
   --header "Authorization: Bearer $DEVBOX_TOKEN" \
+  --header 'X-Devboxes-Tenant: platform' \
   --header 'Content-Type: application/json' \
   --data '{
     "name": "atlas",
@@ -116,12 +169,12 @@ Request fields:
 | `ttl_hours` | integer | 1 to the configured maximum, default 24 |
 | `repository` | string or null | `owner/repository` or an HTTPS GitHub repository URL |
 | `gpu` | object or null | Optional GPU request; omit or use null for CPU-only |
-| `gpu.profile` | string or null | Configured profile name; null selects the operator default |
+| `gpu.profile` | string or null | Configured profile name; null selects the active tenant's effective default |
 | `image` | string or null | Operator-approved image profile name or its exact configured image reference |
 
 Unknown fields are rejected. Creating an existing name returns `409 Conflict`. Recreating a deleted name reuses its retained PVC, and expands it when the new preset requests more storage.
 
-Request the operator's default GPU profile with an empty nested object:
+Request the active tenant's effective default GPU profile with an empty nested object:
 
 ```json
 {
@@ -141,6 +194,8 @@ Select a custom image with `"image": "nginx"`. The controller resolves the selec
 ```json
 {
   "name": "atlas",
+  "tenant": "platform",
+  "created_by": "alice@example.com",
   "state": "ready",
   "preset": "medium",
   "created_at": "2026-07-13T12:00:00Z",
@@ -194,7 +249,11 @@ States are:
 - `stopped`, the Deployment has zero replicas and the home volume remains.
 - `degraded`, the pod failed or a known image or restart failure is visible.
 
-Timestamps are RFC 3339 values. `ssh_host`, `ssh_command`, `pod_name`, and `message` can be null while resources converge. `gpu` is null for CPU-only boxes and `image` is null when no custom profile was selected. Both resolved allocations remain stable across stop and start.
+Timestamps are RFC 3339 values. `tenant` is the stable application tenant ID and
+`created_by` is the authenticated subject recorded at creation. `ssh_host`, `ssh_command`,
+`pod_name`, and `message` can be null while resources converge. `gpu` is null for CPU-only
+boxes and `image` is null when no custom profile was selected. Both resolved allocations
+remain stable across stop and start.
 
 ## Lifecycle semantics
 
@@ -217,7 +276,10 @@ Insights is disabled by default. Authenticated reads return an envelope with `en
 
 Read endpoints accept `since`, `until`, `box` or `devbox`, `instance_id`, `provider`, `model`, and `repo` or `repository` where applicable. Summary and capabilities accept `group_by=provider|model|box|repository`. Timeseries requires a supported `metric` and accepts `bucket=hour|day`. Activity accepts an opaque `cursor` and a `limit` from 1 to 200.
 
-Export accepts `format=json|csv|sqlite`. JSON and CSV honor the filters. SQLite returns a consistent online backup of the complete database and intentionally ignores summary filters. Never copy only the live database file while write-ahead logging is active.
+Export accepts `format=json|csv|sqlite`. JSON and CSV honor the filters. SQLite ignores
+summary filters but still returns only the active tenant: the controller creates a
+consistent online backup and removes all other-tenant rows before responding. Never copy
+only the live database file while write-ahead logging is active.
 
 Purge requires exactly one selector:
 
@@ -245,9 +307,9 @@ Validation failures contain a list of structured errors. Common status codes are
 | Status | Meaning |
 | ---: | --- |
 | 401 | Missing or invalid bearer token or browser session |
-| 403 | Missing or invalid browser CSRF token |
+| 403 | Invalid browser CSRF token, unauthorized tenant, read-only role, or insufficient purge role |
 | 404 | Devbox does not exist |
-| 409 | Devbox name already exists |
+| 409 | Devbox name already exists or a direct tenant ResourceQuota admission rejected create/start |
 | 422 | Invalid path, request field, repository, preset, TTL, disabled feature, or unknown GPU or image profile |
 | 503 | Controller cannot reach the Kubernetes API through `/ready` |
 

@@ -19,6 +19,7 @@ from devboxes_controller.resources import (
     ANNOTATION_GPU_RESOURCE,
     ANNOTATION_INSTANCE_ID,
     ANNOTATION_TTL_HOURS,
+    LABEL_TENANT,
     build_deployment,
     build_pvc,
     build_service,
@@ -52,6 +53,8 @@ def test_deployment_is_hardened_and_ready_for_tmux_workspace() -> None:
     assert deployment["spec"]["progressDeadlineSeconds"] == 1800
     assert deployment["spec"]["strategy"]["type"] == "Recreate"
     assert deployment["metadata"]["annotations"][ANNOTATION_TTL_HOURS] == "24"
+    assert LABEL_TENANT not in deployment["metadata"]["labels"]
+    assert LABEL_TENANT not in deployment["spec"]["selector"]["matchLabels"]
     assert container["resources"]["limits"] == {"memory": "8Gi"}
     assert "cpu" not in container["resources"]["limits"]
     assert container["securityContext"]["allowPrivilegeEscalation"] is True

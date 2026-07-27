@@ -18,16 +18,31 @@ You should receive an acknowledgement within seven days. Please allow maintainer
 
 ## Security model
 
-Devboxes assumes a trusted single operator or trusted operator group. The shared access token can control and permanently purge every devbox in an installation. Workspaces are development machines with passwordless `sudo`; they are not sandboxes for untrusted code or mutually untrusted users.
+Devboxes defaults to a trusted single operator or operator group. Opt-in multi-tenancy adds
+principal roles and a dedicated Kubernetes namespace, credentials, storage, quota, and
+telemetry scope per tenant. The master access token remains an installation-wide operator
+credential that can control and permanently purge every tenant.
+
+Workspaces are development machines with passwordless `sudo`; they are not sandboxes for
+hostile code. Namespace isolation, application authorization, RBAC, ResourceQuota, and
+NetworkPolicy provide administrative tenant separation and defense in depth, not a hardened
+kernel or node boundary. Use separate clusters or appropriately sandboxed runtimes when
+tenants must run mutually hostile workloads.
 
 Recommended deployment controls:
 
 - expose the controller only through HTTPS or local port-forwarding;
 - restrict controller ingress and SSH Services to trusted client networks;
 - use a 256-bit or stronger controller token and rotate it after suspected exposure;
+- give tenant users unique principal tokens and least-privilege `viewer`, `member`, or
+  `admin` memberships instead of the master token;
+- use one namespace per person when independent ownership or quota is required, and keep
+  tenant workspace Secrets separate;
 - use fine-grained, least-privilege provider tokens;
 - enable Kubernetes Secret encryption at rest and an auditable secret manager;
 - enforce the chart's namespace-scoped RBAC and tokenless workspace service account;
+- use a NetworkPolicy-capable CNI, review the chart's SSH-only ingress policy, and add
+  environment-specific source and egress restrictions where required;
 - expose GPU devices only through reviewed operator-owned profiles and trusted derived images;
 - back up important PVCs and test restore procedures;
 - keep Kubernetes, ingress, CSI, images, chart, and CLI releases current;
@@ -41,6 +56,15 @@ Ed25519 host keys. Incoming terminal names are validated against installed termi
 tmux starts.
 
 GPU profiles preserve this trust model. Clients can select only a configured name; they cannot inject an image, extended resource, RuntimeClass, supplemental group, selector, toleration, privileged mode, host path, or device path. The assigned device is fully available to the trusted workspace user, including through passwordless `sudo`, so GPU profiles do not make Devboxes suitable for untrusted workloads. Vendor drivers, device plugins, runtimes, and derived GPU images are part of the operator's trusted supply chain.
+
+Multi-tenant clients select only a configured tenant ID and an operator-approved policy
+catalog. Unknown and unauthorized IDs use the same forbidden response. The controller has
+one namespaced RoleBinding per configured tenant and no ClusterRole; workspaces use
+ServiceAccounts without API tokens or RBAC bindings. Tenant Insights exports, including
+SQLite backups, are sanitized to the active tenant before leaving the controller.
+Application roles do not replace SSH authorization: shell access is controlled by the public
+keys in each tenant workspace Secret. A viewer with an authorized key can modify workspace
+files but cannot change the workspace lifecycle through the Devboxes API.
 
 ## Dependency and supply-chain policy
 

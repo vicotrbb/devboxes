@@ -46,6 +46,10 @@ app.kubernetes.io/component: controller
 {{- end }}
 {{- end }}
 
+{{- define "devboxes.tenantWorkspaceServiceAccountName" -}}
+{{- default (include "devboxes.workspaceServiceAccountName" .root) .tenant.workspaceServiceAccountName }}
+{{- end }}
+
 {{- define "devboxes.controllerImage" -}}
 {{- printf "%s:%s" .Values.controller.image.repository (default .Chart.AppVersion .Values.controller.image.tag) }}
 {{- end }}

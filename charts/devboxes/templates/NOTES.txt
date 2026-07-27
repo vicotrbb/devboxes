@@ -5,8 +5,22 @@ Devboxes is installed in namespace {{ .Release.Namespace }}.
    kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.controller.existingSecret }} \
      --from-literal={{ .Values.controller.accessTokenKey }}='<strong-random-token>'
 
+{{- if .Values.tenancy.enabled }}
+{{- if gt (len .Values.tenancy.principals) 0 }}
+
+   kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.tenancy.existingPrincipalSecret }} \
+     --from-literal={{ (index .Values.tenancy.principals 0).tokenKey }}='<strong-random-principal-token>'
+{{- end }}
+{{- range $tenant := .Values.tenancy.tenants }}
+
+   kubectl -n {{ $tenant.namespace }} create secret generic {{ default $.Values.workspace.existingSecret $tenant.workspaceSecretName }} \
+     --from-file=SSH_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub"
+{{- end }}
+{{- else }}
+
    kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.workspace.existingSecret }} \
      --from-file=SSH_AUTHORIZED_KEYS="$HOME/.ssh/id_ed25519.pub"
+{{- end }}
 
 2. Wait for the controller:
 
@@ -26,6 +40,17 @@ Devboxes is installed in namespace {{ .Release.Namespace }}.
 Important: every workspace needs an externally reachable SSH service. Configure
 workspace.sshService for your cluster's LoadBalancer implementation or use
 NodePort with workspace.sshService.host.
+{{- if .Values.tenancy.enabled }}
+
+Multi-tenancy is enabled with {{ len .Values.tenancy.tenants }} namespace-isolated tenant(s).
+Verify principal membership and select a tenant with:
+
+   devbox tenant list
+   devbox tenant use {{ .Values.tenancy.defaultTenant }}
+
+Review ResourceQuota and NetworkPolicy status in every tenant namespace before onboarding
+users. The master controller token remains an installation-wide operator credential.
+{{- end }}
 {{- if .Values.gpu.enabled }}
 
 GPU acceleration is enabled with {{ len .Values.gpu.profiles }} operator-approved profile(s).

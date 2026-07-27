@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import time
+from pathlib import Path
 from urllib.parse import urlencode
 
 import jwt
@@ -218,6 +220,7 @@ def _custom_cli_token(**overrides: object) -> str:
         "jti": "test-token-id",
         "token_type": CLI_TOKEN_TYPE,
         "scope": CLI_SCOPE,
+        "auth_epoch": hashlib.sha256(MASTER_TOKEN.encode()).hexdigest()[:24],
     }
     claims.update(overrides)
     return jwt.encode(claims, SIGNING_KEY, algorithm="HS256", headers={"typ": "JWT"})
@@ -259,8 +262,93 @@ def test_insights_tokens_are_instance_scoped_domain_separated_and_rotatable() ->
     token = first.issue_insights_token(instance_id, "atlas")
     cli_token, _ = first.issue_cli_token("operator")
 
-    assert same.validate_insights_token(token) == (instance_id, "atlas")
+    assert same.validate_insights_token(token) == ("default", instance_id, "atlas")
+    assert token.startswith(f"v1.{instance_id}.atlas.")
     assert rotated.validate_insights_token(token) is None
     assert first.validate_insights_token(token.replace("atlas", "other")) is None
     assert first.validate_insights_token(cli_token) is None
     assert MASTER_TOKEN not in token
+
+
+def test_principal_tokens_resolve_tenant_roles_and_revoke_derived_credentials(
+    tmp_path: Path,
+) -> None:
+    principal_token = "alice-principal-token-at-least-32-characters"
+    token_path = tmp_path / "alice-token"
+    token_path.write_text(principal_token)
+    tenant_settings = settings(
+        multi_tenancy_enabled=True,
+        default_tenant="platform",
+        principal_token_directory=str(tmp_path),
+        tenants=[
+            {
+                "id": "platform",
+                "displayName": "Platform",
+                "namespace": "devboxes-platform",
+            },
+            {
+                "id": "research",
+                "displayName": "Research",
+                "namespace": "devboxes-research",
+            },
+        ],
+        principals=[
+            {
+                "subject": "alice@example.com",
+                "displayName": "Alice",
+                "tokenKey": "alice-token",
+                "defaultTenant": "platform",
+                "memberships": [
+                    {"tenant": "platform", "role": "admin"},
+                    {"tenant": "research", "role": "viewer"},
+                ],
+            }
+        ],
+    )
+    authenticator = Authenticator(tenant_settings)
+    tenant_insights_token = authenticator.issue_insights_token(
+        "99999999-9999-4999-8999-999999999999",
+        "atlas",
+        "platform",
+    )
+    assert tenant_insights_token.startswith(
+        "v2.platform.99999999-9999-4999-8999-999999999999.atlas."
+    )
+    app = FastAPI()
+
+    @app.get("/checked")
+    async def checked(request: Request):
+        context = await authenticator.require(request)
+        return {
+            "subject": context.subject,
+            "tenant": context.tenant.id,
+            "role": context.role,
+        }
+
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {principal_token}"}
+    assert client.get("/checked", headers=headers).json() == {
+        "subject": "alice@example.com",
+        "tenant": "platform",
+        "role": "admin",
+    }
+    assert (
+        client.get(
+            "/checked",
+            headers={**headers, "X-Devboxes-Tenant": "research"},
+        ).json()["role"]
+        == "viewer"
+    )
+    assert (
+        client.get(
+            "/checked",
+            headers={**headers, "X-Devboxes-Tenant": "missing"},
+        ).status_code
+        == 403
+    )
+
+    cli_token, _ = authenticator.issue_cli_token("alice@example.com")
+    assert authenticator.validate_cli_token(cli_token) == "alice@example.com"
+    token_path.write_text("rotated-alice-principal-token-at-least-32-characters")
+    rotated = Authenticator(tenant_settings)
+    assert rotated.validate_cli_token(cli_token) is None

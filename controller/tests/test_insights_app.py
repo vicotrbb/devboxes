@@ -27,7 +27,7 @@ def enabled_app(tmp_path: Path) -> tuple[TestClient, Settings]:
         insights_db_path=str(tmp_path / "insights.db"),
     )
     service = InsightsService(settings)
-    return TestClient(create_app(settings, FakeManager(), service)), settings  # type: ignore[arg-type]
+    return TestClient(create_app(settings, FakeManager(settings), service)), settings  # type: ignore[arg-type]
 
 
 def otlp_batch(batch_id: str = "a" * 64) -> bytes:
@@ -57,7 +57,7 @@ def test_insights_dashboard_disabled_state_and_read_contract() -> None:
         cookie_secure=False,
         cleanup_interval_seconds=3600,
     )
-    with TestClient(create_app(settings, FakeManager())) as client:  # type: ignore[arg-type]
+    with TestClient(create_app(settings, FakeManager(settings))) as client:  # type: ignore[arg-type]
         browser_login(client)
         dashboard = client.get("/insights")
         assert dashboard.status_code == 200
@@ -237,3 +237,82 @@ def test_insights_query_validation_and_authentication(tmp_path: Path) -> None:
             == 422
         )
         assert client.delete("/api/v1/insights", headers=headers).status_code == 422
+
+
+def test_insights_ingest_query_and_purge_are_tenant_scoped(tmp_path: Path) -> None:
+    settings = Settings(
+        access_token=MASTER_TOKEN,
+        cookie_secure=False,
+        cleanup_interval_seconds=3600,
+        insights_enabled=True,
+        insights_db_path=str(tmp_path / "insights.db"),
+        multi_tenancy_enabled=True,
+        default_tenant="platform",
+        tenants=[
+            {
+                "id": "platform",
+                "displayName": "Platform",
+                "namespace": "devboxes-platform",
+            },
+            {
+                "id": "research",
+                "displayName": "Research",
+                "namespace": "devboxes-research",
+            },
+        ],
+    )
+    client = TestClient(
+        create_app(settings, FakeManager(settings), InsightsService(settings))  # type: ignore[arg-type]
+    )
+    authenticator = Authenticator(settings)
+    instances = {
+        "platform": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "research": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    }
+
+    with client:
+        for index, (tenant, instance_id) in enumerate(instances.items()):
+            credential = authenticator.issue_insights_token(
+                instance_id,
+                "atlas",
+                tenant,
+            )
+            accepted = client.post(
+                "/internal/v1/insights/batches",
+                content=gzip.compress(otlp_batch(chr(ord("c") + index) * 64)),
+                headers={
+                    "Authorization": f"Bearer {credential}",
+                    "Content-Type": "application/json",
+                    "Content-Encoding": "gzip",
+                },
+            )
+            assert accepted.status_code == 200
+
+        for tenant in instances:
+            summary = client.get(
+                "/api/v1/insights/summary?since=24h",
+                headers={
+                    "Authorization": f"Bearer {MASTER_TOKEN}",
+                    "X-Devboxes-Tenant": tenant,
+                },
+            )
+            assert summary.status_code == 200
+            assert summary.json()["tenant"] == tenant
+            assert summary.json()["data"]["ai"]["totals"]["tokens"] == 15
+
+        purged = client.delete(
+            "/api/v1/insights?box=atlas",
+            headers={
+                "Authorization": f"Bearer {MASTER_TOKEN}",
+                "X-Devboxes-Tenant": "platform",
+            },
+        )
+        assert purged.json()["purged_instances"] == 1
+        research = client.get(
+            "/api/v1/insights/summary?since=24h",
+            headers={
+                "Authorization": f"Bearer {MASTER_TOKEN}",
+                "X-Devboxes-Tenant": "research",
+            },
+        )
+        assert research.json()["data"]["ai"]["totals"]["tokens"] == 15

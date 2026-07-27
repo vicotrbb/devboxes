@@ -15,11 +15,41 @@ By default, rotating this Secret invalidates saved CLI tokens after the controll
 restarts. Existing browser sessions also become invalid because session signatures derive
 from the access token.
 
+The controller token is always the installation-wide `operator` credential. When
+multi-tenancy is enabled, reserve it for administration and break-glass recovery rather than
+distributing it to tenant users.
+
 An installation may add a dedicated signing key to the same Secret and set
 `controller.cliSigningKeyKey` to that field. This separates CLI-token rotation from browser
 session rotation without adding another Secret. The key is optional and must contain at
 least 32 strong random characters. Rotating whichever effective signing key is configured
 revokes all issued CLI tokens.
+
+## Tenant principal tokens
+
+Multi-tenant identities use independent strong tokens from
+`tenancy.existingPrincipalSecret` in the controller namespace. Helm values contain only the
+Secret name and each principal's `tokenKey`:
+
+```bash
+alice_token="$(openssl rand -hex 32)"
+bob_token="$(openssl rand -hex 32)"
+kubectl -n devboxes create secret generic devboxes-principals \
+  --from-literal=alice-token="$alice_token" \
+  --from-literal=bob-token="$bob_token"
+unset alice_token bob_token
+```
+
+Each value must contain at least 32 characters, be unique across principals, and differ from
+the master token. The controller mounts the Secret read-only with group-readable mode `0440`
+for its dedicated uid/gid and reads tokens at startup. It stores only a short credential
+epoch in browser sessions and CLI tokens, so rotating a principal value and restarting the
+controller invalidates that principal's existing sessions and CLI credentials without
+rotating other identities.
+
+Principal subjects, display names, membership roles, and Secret key references are
+non-secret Helm policy. Never place the token value itself in a values file. Update the
+Secret, policy, or both and restart the controller to apply a rotation or membership change.
 
 ## Insights ingest credentials
 
@@ -29,7 +59,7 @@ By default, the ingest signing key is derived from the controller access token w
 
 The generated per-workspace Secret is deleted with workspace compute. Its value is referenced through `secretKeyRef`, not embedded in the Deployment. Retaining the home PVC preserves the workspace instance ID and outbox; a normal recreate issues a fresh credential for that same instance.
 
-## Workspace Secret
+## Workspace Secrets
 
 Create the minimal Secret with an SSH public key:
 
@@ -39,6 +69,19 @@ kubectl -n devboxes create secret generic devboxes-workspace \
 ```
 
 Multiple public keys are accepted in the same authorized-keys file. Keep private SSH keys on clients; Devboxes does not need them.
+
+With tenancy enabled, create a separate Secret in every tenant namespace and reference it
+with `tenancy.tenants[].workspaceSecretName`:
+
+```bash
+kubectl -n devboxes-platform create secret generic devboxes-platform-workspace \
+  --from-file=SSH_AUTHORIZED_KEYS="$HOME/.ssh/platform_authorized_keys"
+kubectl -n devboxes-research create secret generic devboxes-research-workspace \
+  --from-file=SSH_AUTHORIZED_KEYS="$HOME/.ssh/research_authorized_keys"
+```
+
+Do not reuse a credential-bearing workspace Secret across tenants. Namespace scoping then
+prevents one tenant's pod specification from referencing another tenant's Secret.
 
 ### GitHub and Git identity
 
@@ -80,6 +123,10 @@ Credential formats and provider authentication policies can change. Confirm curr
 
 ## External secret managers
 
-Point the chart at any existing Secret name. A secret operator only needs to produce the expected keys in the Devboxes namespace. Recommended controls include encryption at rest, short-lived tokens where supported, audit logging, least-privilege provider scopes, and rotation procedures tested before an incident.
+Point the chart at existing Secret names. A secret operator must produce controller and
+principal Secrets in the release namespace and workspace Secrets in their tenant namespaces.
+Recommended controls include encryption at rest, short-lived tokens where supported, audit
+logging, least-privilege provider scopes, and rotation procedures tested before an
+incident.
 
 Never commit rendered Secrets, shell histories containing tokens, account JSON, or private keys to this repository.

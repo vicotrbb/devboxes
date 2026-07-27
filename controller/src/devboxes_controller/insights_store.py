@@ -13,7 +13,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final
 
+# The public ingest/query envelope remains compatible with v1 collectors. The
+# private SQLite migration version advances independently.
 SCHEMA_VERSION: Final = 1
+DATABASE_SCHEMA_VERSION: Final = 2
 _MINIMUM_TIMESTAMP = datetime(2020, 1, 1, tzinfo=UTC)
 
 
@@ -33,6 +36,7 @@ class QueryFilters:
 
     since: datetime
     until: datetime
+    tenant_id: str = "default"
     box: str | None = None
     instance_id: str | None = None
     provider: str | None = None
@@ -52,11 +56,13 @@ class InsightsStore:
         raw_days: int = 30,
         hourly_days: int = 90,
         daily_days: int = 365,
+        default_tenant_id: str = "default",
     ) -> None:
         self.path = Path(path)
         self.raw_days = raw_days
         self.hourly_days = hourly_days
         self.daily_days = daily_days
+        self.default_tenant_id = default_tenant_id
         self._writer_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
@@ -74,6 +80,7 @@ class InsightsStore:
     async def ingest(
         self,
         *,
+        tenant_id: str = "default",
         instance_id: str,
         box_name: str,
         batch_id: str,
@@ -87,6 +94,7 @@ class InsightsStore:
         async with self._writer_lock:
             return await asyncio.to_thread(
                 self._ingest_sync,
+                tenant_id,
                 instance_id,
                 box_name,
                 batch_id,
@@ -119,25 +127,33 @@ class InsightsStore:
         """Return collector freshness and loss counters for coverage reporting."""
         return await asyncio.to_thread(self._collector_status_sync, filters)
 
-    async def purge_box(self, box_name: str) -> int:
+    async def purge_box(self, box_name: str, tenant_id: str = "default") -> int:
         """Delete central Insights records for every instance that used a box name."""
         async with self._writer_lock:
-            return await asyncio.to_thread(self._purge_box_sync, box_name)
+            return await asyncio.to_thread(self._purge_box_sync, tenant_id, box_name)
 
-    async def purge_instance(self, instance_id: str) -> int:
+    async def purge_instance(
+        self,
+        instance_id: str,
+        tenant_id: str = "default",
+    ) -> int:
         """Delete central Insights records for one stable workspace instance."""
         async with self._writer_lock:
-            return await asyncio.to_thread(self._purge_instance_sync, instance_id)
+            return await asyncio.to_thread(
+                self._purge_instance_sync,
+                tenant_id,
+                instance_id,
+            )
 
     async def maintain(self) -> dict[str, int]:
         """Materialize rollups, enforce retention, and checkpoint the WAL."""
         async with self._writer_lock:
             return await asyncio.to_thread(self._maintain_sync)
 
-    async def backup(self, destination: str | Path) -> None:
-        """Create a consistent live snapshot through SQLite's online backup API."""
+    async def backup(self, destination: str | Path, tenant_id: str | None = None) -> None:
+        """Create a consistent, optionally tenant-scoped SQLite snapshot."""
         async with self._writer_lock:
-            await asyncio.to_thread(self._backup_sync, Path(destination))
+            await asyncio.to_thread(self._backup_sync, Path(destination), tenant_id)
 
     async def database_size(self) -> int:
         """Return the current SQLite main, WAL, and shared-memory footprint."""
@@ -158,6 +174,30 @@ class InsightsStore:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
             connection.executescript(f"BEGIN IMMEDIATE;\n{_SCHEMA}\nCOMMIT;")
+            connection.execute("BEGIN IMMEDIATE")
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(devbox_instances)")
+            }
+            if "tenant_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE devbox_instances "
+                    "ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+                )
+                connection.execute(
+                    "UPDATE devbox_instances SET tenant_id = ?",
+                    (self.default_tenant_id,),
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_instances_tenant_name "
+                "ON devbox_instances(tenant_id, name)"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) "
+                "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                (DATABASE_SCHEMA_VERSION,),
+            )
+            connection.commit()
         except Exception:
             connection.rollback()
             raise
@@ -171,12 +211,13 @@ class InsightsStore:
                 "SELECT MAX(version) AS version FROM schema_migrations"
             ).fetchone()
             connection.execute("SELECT 1 FROM metric_points LIMIT 1").fetchone()
-            return row is not None and row["version"] == SCHEMA_VERSION
+            return row is not None and row["version"] == DATABASE_SCHEMA_VERSION
         finally:
             connection.close()
 
     def _ingest_sync(
         self,
+        tenant_id: str,
         instance_id: str,
         box_name: str,
         batch_id: str,
@@ -211,6 +252,12 @@ class InsightsStore:
         ).hexdigest()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            existing_instance = connection.execute(
+                "SELECT tenant_id FROM devbox_instances WHERE id = ?",
+                (instance_id,),
+            ).fetchone()
+            if existing_instance is not None and existing_instance["tenant_id"] != tenant_id:
+                raise ValueError("instance identifier conflicts with another tenant")
             duplicate = connection.execute(
                 "SELECT instance_id, fingerprint FROM ingest_batches WHERE batch_id = ?",
                 (batch_id,),
@@ -225,13 +272,15 @@ class InsightsStore:
                 return IngestResult(False, True, 0, ())
             connection.execute(
                 """
-                INSERT INTO devbox_instances(id, name, first_seen_at, last_seen_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO devbox_instances(
+                    id, tenant_id, name, first_seen_at, last_seen_at
+                )
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     name=excluded.name, last_seen_at=excluded.last_seen_at,
                     deleted_at=NULL
                 """,
-                (instance_id, box_name, received_at, received_at),
+                (instance_id, tenant_id, box_name, received_at, received_at),
             )
             if kind == "otlp":
                 inserted_points, providers = self._insert_otlp(
@@ -627,8 +676,8 @@ class InsightsStore:
         connection = self._connect()
         try:
             if field == "box":
-                conditions = ["1=1"]
-                parameters: list[Any] = []
+                conditions = ["tenant_id = ?"]
+                parameters: list[Any] = [filters.tenant_id]
                 if filters.instance_id:
                     conditions.append("id = ?")
                     parameters.append(filters.instance_id)
@@ -641,33 +690,35 @@ class InsightsStore:
                     parameters,
                 ).fetchall()
             elif field == "model":
-                conditions = ["model IS NOT NULL"]
-                parameters = []
+                conditions = ["s.model IS NOT NULL", "i.tenant_id = ?"]
+                parameters = [filters.tenant_id]
                 if filters.provider:
-                    conditions.append("provider = ?")
+                    conditions.append("s.provider = ?")
                     parameters.append(filters.provider)
                 if filters.model:
-                    conditions.append("model = ?")
+                    conditions.append("s.model = ?")
                     parameters.append(filters.model)
                 if filters.instance_id:
-                    conditions.append("instance_id = ?")
+                    conditions.append("s.instance_id = ?")
                     parameters.append(filters.instance_id)
                 rows = connection.execute(
-                    f"SELECT DISTINCT model AS value FROM metric_series "
+                    f"SELECT DISTINCT s.model AS value FROM metric_series s "
+                    f"JOIN devbox_instances i ON i.id = s.instance_id "
                     f"WHERE {' AND '.join(conditions)} ORDER BY value LIMIT 200",
                     parameters,
                 ).fetchall()
             else:
-                conditions = ["1=1"]
-                parameters = []
+                conditions = ["i.tenant_id = ?"]
+                parameters = [filters.tenant_id]
                 if filters.repo:
-                    conditions.append("repo_key = ?")
+                    conditions.append("r.repo_key = ?")
                     parameters.append(filters.repo)
                 if filters.instance_id:
-                    conditions.append("instance_id = ?")
+                    conditions.append("r.instance_id = ?")
                     parameters.append(filters.instance_id)
                 rows = connection.execute(
-                    f"SELECT DISTINCT repo_key AS value FROM repositories "
+                    f"SELECT DISTINCT r.repo_key AS value FROM repositories r "
+                    f"JOIN devbox_instances i ON i.id = r.instance_id "
                     f"WHERE {' AND '.join(conditions)} ORDER BY value LIMIT 200",
                     parameters,
                 ).fetchall()
@@ -678,8 +729,8 @@ class InsightsStore:
     def _latest_worktree(
         self, connection: sqlite3.Connection, filters: QueryFilters
     ) -> dict[str, int]:
-        conditions = ["1=1"]
-        parameters: list[Any] = []
+        conditions = ["i.tenant_id = ?"]
+        parameters: list[Any] = [filters.tenant_id]
         if filters.box:
             conditions.append("i.name = ?")
             parameters.append(filters.box)
@@ -860,8 +911,8 @@ class InsightsStore:
     def _collector_status_sync(self, filters: QueryFilters) -> list[dict[str, Any]]:
         connection = self._connect()
         try:
-            conditions = ["1=1"]
-            parameters: list[Any] = []
+            conditions = ["i.tenant_id = ?"]
+            parameters: list[Any] = [filters.tenant_id]
             if filters.box:
                 conditions.append("i.name = ?")
                 parameters.append(filters.box)
@@ -913,14 +964,18 @@ class InsightsStore:
         finally:
             connection.close()
 
-    def _purge_box_sync(self, box_name: str) -> int:
+    def _purge_box_sync(self, tenant_id: str, box_name: str) -> int:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             identifiers = connection.execute(
-                "SELECT id FROM devbox_instances WHERE name = ?", (box_name,)
+                "SELECT id FROM devbox_instances WHERE tenant_id = ? AND name = ?",
+                (tenant_id, box_name),
             ).fetchall()
-            connection.execute("DELETE FROM devbox_instances WHERE name = ?", (box_name,))
+            connection.execute(
+                "DELETE FROM devbox_instances WHERE tenant_id = ? AND name = ?",
+                (tenant_id, box_name),
+            )
             connection.commit()
             return len(identifiers)
         except Exception:
@@ -929,12 +984,13 @@ class InsightsStore:
         finally:
             connection.close()
 
-    def _purge_instance_sync(self, instance_id: str) -> int:
+    def _purge_instance_sync(self, tenant_id: str, instance_id: str) -> int:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             deleted = connection.execute(
-                "DELETE FROM devbox_instances WHERE id = ?", (instance_id,)
+                "DELETE FROM devbox_instances WHERE tenant_id = ? AND id = ?",
+                (tenant_id, instance_id),
             ).rowcount
             connection.commit()
             return max(deleted, 0)
@@ -1037,12 +1093,22 @@ class InsightsStore:
         finally:
             connection.close()
 
-    def _backup_sync(self, destination: Path) -> None:
+    def _backup_sync(self, destination: Path, tenant_id: str | None) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         source = self._connect()
         target = sqlite3.connect(destination)
         try:
             source.backup(target)
+            if tenant_id is not None:
+                target.execute("PRAGMA foreign_keys=ON")
+                target.execute("PRAGMA secure_delete=ON")
+                target.execute("BEGIN IMMEDIATE")
+                target.execute(
+                    "DELETE FROM devbox_instances WHERE tenant_id != ?",
+                    (tenant_id,),
+                )
+                target.commit()
+                target.execute("VACUUM")
         finally:
             target.close()
             source.close()
@@ -1165,8 +1231,8 @@ def _normalize_series(rows: Iterable[sqlite3.Row], metric: str) -> list[dict[str
 
 
 def _metric_dimension_filter(filters: QueryFilters) -> tuple[str, list[Any]]:
-    conditions = ["1=1"]
-    parameters: list[Any] = []
+    conditions = ["i.tenant_id = ?"]
+    parameters: list[Any] = [filters.tenant_id]
     if filters.box:
         conditions.append("i.name = ?")
         parameters.append(filters.box)
@@ -1183,8 +1249,16 @@ def _metric_dimension_filter(filters: QueryFilters) -> tuple[str, list[Any]]:
 
 
 def _git_filter(filters: QueryFilters) -> tuple[str, list[Any]]:
-    conditions = ["c.committed_at >= ?", "c.committed_at <= ?"]
-    parameters: list[Any] = [filters.since.isoformat(), filters.until.isoformat()]
+    conditions = [
+        "i.tenant_id = ?",
+        "c.committed_at >= ?",
+        "c.committed_at <= ?",
+    ]
+    parameters: list[Any] = [
+        filters.tenant_id,
+        filters.since.isoformat(),
+        filters.until.isoformat(),
+    ]
     if filters.box:
         conditions.append("i.name = ?")
         parameters.append(filters.box)

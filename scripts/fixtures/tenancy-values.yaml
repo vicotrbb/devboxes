@@ -1,0 +1,44 @@
+tenancy:
+  enabled: true
+  defaultTenant: platform
+  existingPrincipalSecret: devboxes-principals
+  tenants:
+    - id: platform
+      displayName: Platform Engineering
+      namespace: devboxes-platform
+      createNamespace: true
+      namespaceLabels:
+        owner: platform
+      workspaceSecretName: devboxes-platform-workspace
+      maxTtlHours: 72
+      allowedPresets: [small, medium]
+      allowedGpuProfiles: []
+      allowedImageProfiles: []
+      resourceQuota:
+        enabled: true
+        hard:
+          requests.cpu: "8"
+          requests.memory: 32Gi
+          requests.storage: 500Gi
+          count/deployments.apps: "10"
+          count/pods: "10"
+    - id: research
+      displayName: Research
+      namespace: devboxes-research
+      createNamespace: true
+      workspaceSecretName: devboxes-research-workspace
+      maxTtlHours: 168
+      allowedPresets: [small, medium, large]
+  principals:
+    - subject: alice@example.com
+      displayName: Alice
+      tokenKey: alice-token
+      defaultTenant: platform
+      memberships:
+        - tenant: platform
+          role: admin
+        - tenant: research
+          role: viewer
+
+insights:
+  enabled: true

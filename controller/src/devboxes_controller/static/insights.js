@@ -1,4 +1,5 @@
 const enabled = document.body.dataset.insightsEnabled === "true";
+const tenant = document.body.dataset.tenant || "default";
 const logoutButton = document.querySelector("#logout-button");
 const refreshButton = document.querySelector("#insights-refresh");
 
@@ -14,6 +15,7 @@ async function api(path, options = {}) {
   const method = options.method || "GET";
   const headers = new Headers(options.headers || {});
   headers.set("Accept", "application/json");
+  headers.set("X-Devboxes-Tenant", tenant);
   if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
     headers.set(
       "X-Devboxes-CSRF",
