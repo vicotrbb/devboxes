@@ -17,7 +17,7 @@
     "@eslint/js": "10.0.1",
     "eslint": "10.8.0",
     "globals": "17.8.0",
-    "markdownlint-cli2": "0.23.2",
+    "markdownlint-cli2": "0.23.3",
     "prettier": "3.9.6"
   }
 }
